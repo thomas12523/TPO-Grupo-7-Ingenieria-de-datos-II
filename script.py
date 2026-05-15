@@ -16,7 +16,7 @@ def crear_tablas_f1():
     cursor = conn.cursor()
     print("Conectado exitosamente a SQL Server.")
 
-    # Script SQL con validación IF OBJECT_ID para las 10 tablas
+    # Script SQL con validación IF OBJECT_ID para las 5 tablas maestras
     sql_script = """
     -- 1. Equipos 
     IF OBJECT_ID('dbo.Equipos', 'U') IS NULL
@@ -72,70 +72,10 @@ def crear_tablas_f1():
             IdTemporada INT FOREIGN KEY REFERENCES Temporadas(IdTemporada)
         );
     END
-
-    -- 6. Resultados 
-    IF OBJECT_ID('dbo.Resultados', 'U') IS NULL
-    BEGIN
-        CREATE TABLE Resultados (
-            IdResultado INT PRIMARY KEY IDENTITY(1,1),
-            IdCarrera INT FOREIGN KEY REFERENCES Carreras(IdCarrera),
-            IdPiloto INT FOREIGN KEY REFERENCES Pilotos(IdPiloto),
-            PosicionInicial INT,
-            PosicionFinal INT,
-            TiempoFinal VARCHAR(20),
-            PuntosGanados INT,
-            PenalizacionAplicada BIT DEFAULT 0
-        );
-    END
-
-    -- 7. PitStops 
-    IF OBJECT_ID('dbo.PitStops', 'U') IS NULL
-    BEGIN
-        CREATE TABLE PitStops (
-            IdPitStop INT PRIMARY KEY IDENTITY(1,1),
-            IdCarrera INT FOREIGN KEY REFERENCES Carreras(IdCarrera),
-            IdPiloto INT FOREIGN KEY REFERENCES Pilotos(IdPiloto),
-            NumeroParada INT,
-            TiempoParada DECIMAL(5,3)
-        );
-    END
-
-    -- 8. Penalizaciones 
-    IF OBJECT_ID('dbo.Penalizaciones', 'U') IS NULL
-    BEGIN
-        CREATE TABLE Penalizaciones (
-            IdPenalizacion INT PRIMARY KEY IDENTITY(1,1),
-            IdCarrera INT FOREIGN KEY REFERENCES Carreras(IdCarrera),
-            IdPiloto INT FOREIGN KEY REFERENCES Pilotos(IdPiloto),
-            TipoPenalizacion VARCHAR(100),
-            TiempoAdicional DECIMAL(5,2)
-        );
-    END
-
-    -- 9. participaciones (Relación N:N) 
-    IF OBJECT_ID('dbo.participaciones', 'U') IS NULL
-    BEGIN
-        CREATE TABLE participaciones (
-            IdPiloto INT FOREIGN KEY REFERENCES Pilotos(IdPiloto),
-            IdTemporada INT FOREIGN KEY REFERENCES Temporadas(IdTemporada),
-            PRIMARY KEY (IdPiloto, IdTemporada)
-        );
-    END
-
-    -- 10. rendimientos (Relación N:N) 
-    IF OBJECT_ID('dbo.rendimientos', 'U') IS NULL
-    BEGIN
-        CREATE TABLE rendimientos (
-            IdEquipo INT FOREIGN KEY REFERENCES Equipos(IdEquipo),
-            IdCircuito INT FOREIGN KEY REFERENCES Circuitos(IdCircuito),
-            MejorTiempoCarrera VARCHAR(20),
-            PRIMARY KEY (IdEquipo, IdCircuito)
-        );
-    END
     """
     cursor.execute(sql_script)
     conn.commit()
-    print("Esquema de 10 tablas creado correctamente.")
+    print("Esquema de 5 tablas maestras creado correctamente.")
 
     # Cerrar conexión
     cursor.close()
