@@ -173,15 +173,72 @@ def rellenar_tablas_f1():
         ('2023-04-30', 5, 1);
     END
     """
-
     # Ejecutar el script completo
     cursor.execute(insert_script)
     conn.commit()
     print("Datos maestros insertados correctamente en las tablas.")
-
     # Cerrar conexión
     cursor.close()
     conn.close()
+
+# ==========================================
+# OPERACIONES CRUD PARA SQL
+# ==========================================
+
+def insertar_piloto_manual(nombre, fecha_nacimiento, nacionalidad, id_equipo):
+    conn = pymssql.connect(**config)
+    cursor = conn.cursor()
+    try:
+        query = "INSERT INTO Pilotos (Nombre, FechaNacimiento, Nacionalidad, IdEquipo) VALUES (%s, %s, %s, %d)"
+        cursor.execute(query, (nombre, fecha_nacimiento, nacionalidad, id_equipo))
+        conn.commit()
+        print(f"Piloto {nombre} registrado con éxito en SQL Server.")
+    except Exception as e:
+        print(f"Error al insertar piloto: {e}")
+    finally:
+        conn.close()
+
+# 2. UPDATE 
+def actualizar_director_equipo(id_equipo, nuevo_director):
+    conn = pymssql.connect(**config)
+    cursor = conn.cursor()
+    try:
+        query = "UPDATE Equipos SET Director = %s WHERE IdEquipo = %d"
+        cursor.execute(query, (nuevo_director, id_equipo))
+        conn.commit()
+        print(f"Equipo ID {id_equipo} actualizado con el nuevo director: {nuevo_director}")
+    except Exception as e:
+        print(f"Error al actualizar el director: {e}")
+    finally:
+        conn.close()
+
+def cambiar_piloto_de_equipo(id_piloto, nuevo_id_equipo):
+    conn = pymssql.connect(**config)
+    cursor = conn.cursor()
+    try:
+        query = "UPDATE Pilotos SET IdEquipo = %d WHERE IdPiloto = %d"
+        cursor.execute(query, (nuevo_id_equipo, id_piloto))
+        conn.commit()
+        print(f"Piloto ID {id_piloto} transferido al equipo ID {nuevo_id_equipo}")
+    except Exception as e:
+        print(f"Error al transferir el piloto: {e}")
+    finally:
+        conn.close()
+
+# 3. DELETE 
+def eliminar_piloto(id_piloto):
+    conn = pymssql.connect(**config)
+    cursor = conn.cursor()
+    try:
+        query = "DELETE FROM Pilotos WHERE IdPiloto = %d"
+        cursor.execute(query, (id_piloto,))
+        conn.commit()
+        print(f"Piloto ID {id_piloto} eliminado correctamente de SQL Server.")
+    except Exception as e:
+        print(f"Error al eliminar el piloto: {e}")
+    finally:
+        conn.close()
+
 # Ejecutar el script completo
 crear_tablas_f1()
 verificar_datos()
