@@ -120,7 +120,7 @@ def rellenar_tablas_f1():
     cursor = conn.cursor()
     print("Conectado exitosamente a SQL Server para rellenar tablas.")
 
-    # Insertar datos únicamente en las 5 tablas maestras (Arquitectura Políglota)
+    # Insertar datos en las 5 tablas "maestras" de prueba
     insert_script = """
     -- 1. Equipos
     IF NOT EXISTS (SELECT 1 FROM Equipos WHERE Nombre = 'Red Bull Racing')
