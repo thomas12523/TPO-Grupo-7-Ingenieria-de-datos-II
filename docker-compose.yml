@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  # 1. SQL Server (Base Relacional para las 10 tablas maestras)
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: f1_sqlserver
+    platform: linux/amd64
+    ports:
+      - "1433:1433"
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=Password123!
+      - MSSQL_PID=Developer
+
+  # 2. MongoDB (Para Pit Stops, Penalizaciones y Vueltas Rápidas)
+  mongodb:
+    image: mongo:latest
+    container_name: f1_mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  # 3. Cassandra (Para Historial de Campeonatos y Victorias)
+  cassandra:
+    image: cassandra:latest
+    container_name: f1_cassandra
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+
+  # 4. Neo4j (Para Relaciones Pilotos-Temporadas y Países-Circuitos)
+  neo4j:
+    image: neo4j:latest
+    container_name: f1_neo4j
+    ports:
+      - "7474:7474" # Interfaz Web
+      - "7687:7687" # Protocolo Bolt para Python
+    environment:
+      - NEO4J_AUTH=neo4j/password123
+    volumes:
+      - neo4j_data:/data
+
+volumes:
+  mongo_data:
+  cassandra_data:
+  neo4j_data:
