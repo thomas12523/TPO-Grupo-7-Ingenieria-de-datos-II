@@ -81,38 +81,6 @@ def crear_tablas_f1():
     conn.close()
     rellenar_tablas_f1()
 
- 
-def verificar_datos():
-    # Establecer conexión
-    conn = pymssql.connect(**config)
-    cursor = conn.cursor()
-    print("Conectado exitosamente a SQL Server para verificar datos.")
-
-    # Consultar datos de la tabla Equipos
-    print("\nDatos de la tabla Equipos:")
-    cursor.execute("SELECT * FROM Equipos")
-    equipos = cursor.fetchall()
-    for equipo in equipos:
-        print(equipo)
-
-    # Consultar datos de la tabla Pilotos
-    print("\nDatos de la tabla Pilotos:")
-    cursor.execute("SELECT * FROM Pilotos")
-    pilotos = cursor.fetchall()
-    for piloto in pilotos:
-        print(piloto)
-
-    # Consultar datos de la tabla Circuitos
-    print("\nDatos de la tabla Circuitos:")
-    cursor.execute("SELECT * FROM Circuitos")
-    circuitos = cursor.fetchall()
-    for circuito in circuitos:
-        print(circuito)
-
-    # Cerrar conexión
-    cursor.close()
-    conn.close()
-    print("\nVerificación de datos completada.")
 
 def rellenar_tablas_f1():
     # Establecer conexión
