@@ -31,8 +31,8 @@ def vincular_carrera_circuito_pais(nombreCarrera,nombreCircuito,nombrePais):
         MERGE (c)-[:UBICADO_EN]->(p)
         MERGE (ca)-[:REALIZADO_EN]->(c)
         """
-    session.run(query,carrera=nombreCarrera,circuito=nombreCircuito,pais=nombrePais)
-    print("Relacion creada")
+        session.run(query,carrera=nombreCarrera,circuito=nombreCircuito,pais=nombrePais)
+        print("Relacion creada")
 
 
 # Casos de usos 5 y 6
@@ -62,7 +62,7 @@ def paisConMasCarreras():
         RETURN p.nombre,CantidadCarreras
         ORDER BY CantidadCarreras DESC
         """
-    session.run(query)
+        session.run(query)
 
 def paisConMas1Circuito():
     print("Los Paises son:\n")
@@ -73,6 +73,28 @@ def paisConMas1Circuito():
         WHERE CantidadCircuitos>1
         RETURN p.nombre,CantidadCircuitos
         """
-    session.run(query)
+        session.run(query)
+
+# BORRAR INFORMACION DE NEO4J
+def borrarDatosNeo4j():
+    
+    with driver.session() as session:
+        query="""
+        MATCH (n)
+        DETACH DELETE n
+        """
+        session.run(query)
+        print("Datos borrados exitosamente\n")
+
+# ACTUALIZAR NOMBRE DEL CIRCUITO
+def actualizarNombreCircuito(nombreViejo, nombreNuevo):
+    with driver.session() as session:
+        query = """
+        MATCH (c:Circuito {nombre: $viejo})
+        SET c.nombre = $nuevo
+        RETURN c
+        """
+        session.run(query, viejo=nombreViejo, nuevo=nombreNuevo)
+        print(f"Circuito actualizado a: {nombreNuevo}")
 
 driver.close()
