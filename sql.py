@@ -8,6 +8,18 @@ config = {
     'database': 'master' 
 }
 
+def obtener_conexion():
+    return pymssql.connect(**config)
+
+def testear_sql():
+    # Directo al mail con las demas conexiones
+    try:
+        conn = obtener_conexion()
+        conn.close()
+        return True, "SQL Server: Conectado"
+    except Exception as e:
+        return False, f"SQL Server Error: {e}"
+
 def crear_tablas_f1():
 
     # Establecer conexión
