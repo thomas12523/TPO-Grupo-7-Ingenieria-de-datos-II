@@ -67,14 +67,43 @@ consultando SQL Server para garantizar consistencia de IDs.
 | SQL Server | Fuente de verdad, esquema completo | — |
 | Cassandra | Resultados históricos desnormalizados para analítica | SQL Server |
 | MongoDB | Pit stops y penalizaciones como documentos | SQL Server |
-| Neo4j | Grafo de relaciones piloto↔temporada, equipo↔circuito | SQL Server |
+| Neo4j | Grafo de relaciones piloto↔temporada, carrera↔circuito | SQL Server |
 | Redis | Sesiones de usuario con TTL | SQL Server (valida credenciales) |
 
 **Justificación:** ninguna base NoSQL tiene datos que no existan en SQL Server.
 Esto garantiza consistencia y permite reconstruir cualquier base NoSQL desde cero
-en caso de pérdida de datos.
+en caso de pérdida de datos, re-ejecutando la sincronización.
 
 ---
+
+## Consistencia eventual y tolerancia a fallos
+
+### Modelo de consistencia
+El sistema implementa **consistencia eventual** (modelo BASE) para la capa NoSQL:
+
+- **SQL Server es ACID**: toda escritura en SQL es atómica y durable. Es la única fuente de verdad.
+- **Los NoSQL son entornos de lectura**: nunca se escriben directamente desde el flujo principal. Solo se actualizan vía sincronización desde SQL.
+- **La sincronización es idempotente**: la función `_sincronizar_en_segundo_plano()` borra y reinsertta todos los datos en cada NoSQL. Ejecutarla N veces produce el mismo resultado. Esto permite recuperar la consistencia en cualquier momento sin lógica de reconciliación.
+
+### Flujo de escritura
+```
+Usuario → SQL Server (ACID, commit) → _sincronizar_en_segundo_plano()
+                                            ├── Cassandra (independiente)
+                                            ├── MongoDB   (independiente)
+                                            └── Neo4j     (independiente)
+```
+
+### Comportamiento ante fallos
+Cada base NoSQL se sincroniza de forma **independiente**. Si una falla:
+- Las demás continúan sincronizándose
+- SQL ya tiene el dato correcto → no hay pérdida de datos
+- El sistema avisa qué bases quedaron desactualizadas (`⚠️ Entornos de lectura listos: 2/3`)
+- Al volver a levantar la base, el siguiente CRUD restaura la consistencia automáticamente
+
+### ¿Por qué no hay rollback distribuido?
+Porque no es necesario: si SQL confirma el cambio, el dato está seguro.
+Si un NoSQL falla en el sync, es un problema de *lectura eventual*, no de *integridad*.
+La operación idempotente hace las veces de mecanismo de recuperación.
 
 ---
 
@@ -129,8 +158,8 @@ Neo4j es la opción correcta porque:
   acumulados — en Neo4j esto es un `MATCH` + `WITH` + `WHERE`, sin JOINs.
 - CU6 recorre `(Carrera)-[:REALIZADO_EN]->(Circuito)-[:UBICADO_EN]->(Pais)`,
   una cadena de 3 nodos que en SQL requeriría 2 JOINs + GROUP BY.
-- La relación `PARTICIPO_EN` tiene el atributo `podios` actualizable en el momento
-  en que se registra un resultado en Cassandra, demostrando interacción entre bases.
+- La relación `PARTICIPO_EN` tiene el atributo `podios` que refleja los podios
+  reales leídos desde SQL Server al momento de la sincronización.
 
 **Nodos y relaciones:**
 | Nodo | Atributos |
@@ -158,11 +187,39 @@ Redis es la opción correcta porque:
 **Flujo implementado:**
 1. Usuario ingresa email y password
 2. Se validan contra la tabla `Usuarios` de SQL Server (fuente de verdad)
-3. Si son correctas, se crea la sesión en Redis con TTL:
-   - Dispositivo de confianza → 600 segundos (10 minutos)
-   - Dispositivo no confiable → 5 segundos
-4. El valor guardado en Redis es el **rol** del usuario (admin/director/prensa)
+3. Si son correctas, se crea la sesión en Redis con TTL según el **rol**:
+   - `admin` / `director` → 600 segundos (usuarios de confianza)
+   - `prensa` → 5 segundos (acceso limitado, no confiable)
+4. El valor guardado en Redis es el **rol** del usuario
 5. Al hacer logout → se elimina la clave manualmente
+6. Cada acción de login/logout se registra en la tabla `Auditoria` de SQL (historial permanente)
+
+---
+
+## CRUD — Gestión de datos maestros
+
+### Decisión: toda escritura pasa por SQL
+Las operaciones CRUD del sistema solo modifican **SQL Server**. Los NoSQL son
+entornos de lectura y nunca reciben escrituras directas desde el flujo principal.
+
+**Justificación:** si se permitiera escribir directamente en un NoSQL, se rompe
+la garantía de consistencia. Un insert en Cassandra sin el correspondiente insert
+en SQL generaría un dato huérfano que desaparecería en la próxima sincronización.
+
+### Operaciones implementadas y su narrativa F1
+
+| Operación SQL | Narrativa F1 | Propagación |
+|---------------|--------------|-------------|
+| Insertar Piloto | Rookie firma contrato para la temporada | Sync → Cassandra, MongoDB, Neo4j |
+| Actualizar Director | Cambio de director técnico del equipo | Sync → Cassandra, MongoDB, Neo4j |
+| Transferir Piloto | Piloto cambia de equipo (ej: Hamilton a Ferrari) | Sync → Cassandra, MongoDB, Neo4j |
+| Eliminar Piloto | Retiro o pérdida de asiento | Sync → reborra al piloto de todos los NoSQL |
+
+### Comportamiento ante fallo en el sync post-CRUD
+- Si SQL confirma → el dato está seguro, independientemente de lo que pase después
+- Si un NoSQL falla en la propagación → SQL tiene el estado correcto
+- El sistema informa cuántas bases se sincronizaron (`✅ SQL actualizado. Entornos NoSQL sincronizados: 2/3`)
+- El siguiente CRUD vuelve a intentar la sincronización completa
 
 ---
 
@@ -181,6 +238,20 @@ Solución aplicada:
   cluster = Cluster(['localhost'], connection_class=AsyncioConnection)
   ```
 
+### Conexión lazy en Cassandra
+El objeto `cluster` y `session` de Cassandra **no se inicializan al importar el módulo**.
+Se usa una función `conectar()` que se llama explícitamente antes del primer uso.
+Esto evita que importar `cassandraDB` en `main.py` dispare una conexión automática
+y falle si Cassandra no está disponible en ese momento.
+
+### Neo4j driver v5 — `.consume()` obligatorio
+El driver de Neo4j v5 no garantiza que una escritura se comitee hasta que el resultado
+sea consumido. Por eso todas las operaciones de escritura usan `.consume()`:
+```python
+session.run("MERGE ...", params).consume()
+```
+Sin esto, el grafo aparece vacío aunque la query no lance errores.
+
 ### Entorno virtual (.venv)
 Se usa un entorno virtual para aislar las dependencias del proyecto.
 El directorio `.venv/` está en `.gitignore` — cada integrante debe crearlo localmente con:
@@ -194,10 +265,11 @@ pip install -r requirements.txt
 
 ## Decisiones pendientes
 
-- [x] Definir si PARTICIPACION registra atributos adicionales → resuelto: sin atributos extra
-- [x] Confirmar estructura de documentos MongoDB para PitStops → resuelto: colecciones `pit_stops` y `vueltas_rapidas`
-- [x] Confirmar atributos de relaciones en Neo4j → resuelto: `PARTICIPO_EN` tiene `podios`
+- [x] Definir si PARTICIPACION registra atributos adicionales → sin atributos extra
+- [x] Confirmar estructura de documentos MongoDB para PitStops → colecciones `pit_stops` y `vueltas_rapidas`
+- [x] Confirmar atributos de relaciones en Neo4j → `PARTICIPO_EN` tiene `podios`
 - [x] Completar justificación de MongoDB (CU3, CU4) → completado arriba
 - [x] Completar justificación de Neo4j (CU5, CU6) → completado arriba
-- [ ] Poblar Neo4j desde SQL Server (función `poblar_desde_sql()` comentada en `neo4jDB.py`)
-- [ ] Corregir bugs en `neo4jDB.py`: `session.run()` fuera del bloque `with` en `pilotosEficientes()`, y `sum(ca)` debe ser `count(ca)` en `paisConMasCarreras()`
+- [x] Implementar `poblar_desde_sql()` en Neo4j → implementado, lee desde SQL y puebla el grafo
+- [x] Corregir bugs en `neo4jDB.py` → resueltos: `.consume()` en todas las escrituras, `count(ca)` en CU6
+- [x] CU5 umbral `>5 temporadas` sin datos suficientes → resuelto agregando temporadas 2016-2018

@@ -10,9 +10,9 @@ Sistema de gestión de Fórmula 1 utilizando SQL Server, Cassandra, MongoDB, Neo
 | **Cassandra** | Resultados históricos desnormalizados para analítica | CU1: pilotos multicampeones / CU2: equipos con más victorias |
 | **MongoDB** | Pit stops y penalizaciones como documentos | CU3: vuelta más rápida / CU4: promedio de pit stops |
 | **Neo4j** | Grafo de relaciones piloto↔temporada, país↔circuito | CU5 / CU6 |
-| **Redis** | Sesiones de usuario con TTL | Login / logout / expiración de sesión |
+| **Redis** | Sesiones de usuario con TTL por rol | Login / logout / expiración de sesión |
 
-> **Regla de oro:** ninguna base NoSQL tiene datos que no existan en SQL Server. Todas consultan SQL para obtener IDs consistentes antes de insertar.
+> **Regla de oro:** ninguna base NoSQL tiene datos que no existan en SQL Server. Toda escritura entra por SQL y se propaga a los NoSQL automáticamente.
 
 > Ver decisiones de diseño y justificaciones en [`docs/DISEÑO.md`](docs/DISEÑO.md).
 
@@ -73,62 +73,42 @@ pip install -r requirements.txt
 
 ### 5. Levantar los contenedores Docker
 
-El proyecto usa Docker para las bases de datos. Si ya tenés contenedores de Cassandra, MongoDB y Neo4j de clases anteriores, podés reutilizarlos — están en los mismos puertos.
+Todas las bases están definidas en `docker-compose.yml`.
 
-**Levantar SQL Server y Redis** (los que no vienen de clases):
 ```bash
 docker compose up -d
 ```
 
-**Levantar los contenedores de clases** (Cassandra, MongoDB, Neo4j):
+Verificar que los 5 contenedores estén corriendo:
 ```bash
-docker start <nombre-contenedor-cassandra> <nombre-contenedor-mongo> <nombre-contenedor-neo4j>
+docker ps --format "table {{.Names}}\t{{.Status}}"
 ```
 
-Verificar que todo esté corriendo:
-```bash
-docker ps
-```
-
-> SQL Server tarda ~30 segundos en estar listo la primera vez. Si el script falla al conectar, esperar un momento y volver a ejecutar.
+> **Cassandra tarda ~30 segundos** en estar lista después de iniciarse.
+> Para confirmar: `docker logs f1_cassandra 2>&1 | tail -5`
+> Buscar la línea: `Starting listening for CQL clients`
 
 ---
 
 ## Ejecución
 
-**El orden importa** — SQL Server tiene que estar cargado antes que las demás bases.
+### Paso 1 — Inicializar SQL Server (solo la primera vez o después de `down -v`)
 
-### 1. SQL Server — crea todas las tablas y carga los datos base
 ```bash
 python sql.py
 ```
+
 Crea 12 tablas (Equipos, Usuarios, Auditoria, Pilotos, Circuitos, Temporadas, Carreras, Resultados, PitStops, Penalizaciones, Participacion, Rendimiento) y las pobla con datos de prueba.
 
-### 2. Cassandra — resultados históricos
-```bash
-python cassandraDB.py
-```
-Consulta SQL Server, carga 75 resultados históricos (25 carreras × top 3) y ejecuta CU1 y CU2.
+### Paso 2 — Correr la aplicación
 
-### 3. MongoDB — pit stops y penalizaciones
-```bash
-python mongoDB.py
-```
-
-### 4. Neo4j — grafo de relaciones
-```bash
-python neo4jDB.py
-```
-
-### 5. Redis — sesiones de usuario
-```bash
-python redisDB.py
-```
-
-### 6. Aplicación principal
 ```bash
 python main.py
 ```
+
+Al iniciar, `main.py` verifica las conexiones, valida el esquema SQL y **sincroniza automáticamente** los datos hacia Cassandra, MongoDB y Neo4j. No es necesario correr los otros `.py` por separado.
+
+> Los scripts individuales (`cassandraDB.py`, `mongoDB.py`, etc.) siguen siendo ejecutables de forma independiente para pruebas o desarrollo.
 
 ---
 
@@ -151,24 +131,67 @@ docker compose down -v       # para, elimina contenedores Y borra los datos guar
 
 ## Puertos
 
-| Servicio | Puerto |
-|----------|--------|
-| SQL Server | 1433 |
-| MongoDB | 27017 |
-| Cassandra | 9042 |
-| Neo4j (web) | 7474 |
-| Neo4j (bolt) | 7687 |
-| Redis | 6379 |
+| Servicio | Puerto | Interfaz web |
+|----------|--------|-------------|
+| SQL Server | 1433 | — |
+| MongoDB | 27017 | — |
+| Cassandra | 9042 | — |
+| Neo4j | 7687 (bolt) | http://localhost:7474 |
+| Redis | 6379 | — |
+
+**Neo4j Browser** → http://localhost:7474 — usuario: `neo4j` / password: `password123`
 
 ---
 
 ## Usuarios del sistema
 
-| Email | Password | Rol |
-|-------|----------|-----|
-| admin@f1.com | admin123 | admin |
-| director@f1.com | dir456 | director |
-| prensa@f1.com | prensa789 | prensa |
+| Email | Password | Rol | TTL de sesión |
+|-------|----------|-----|--------------|
+| admin@f1.com | admin123 | admin | 600 s |
+| director@f1.com | dir456 | director | 600 s |
+| prensa@f1.com | prensa789 | prensa | 5 s |
+
+El TTL se asigna automáticamente según el rol: `prensa` es no confiable (5 s), el resto es confiable (600 s). Cuando la sesión expira, el sistema cierra el menú automáticamente.
+
+---
+
+## CRUD — Gestión de datos maestros
+
+Toda escritura pasa por **SQL Server** (fuente de verdad). Al confirmar un cambio, el sistema propaga automáticamente a Cassandra, MongoDB y Neo4j.
+
+| Operación | Descripción |
+|-----------|-------------|
+| `L` — Listar | Muestra todos los pilotos y equipos con sus IDs |
+| `1` — Insertar piloto | Alta de un nuevo piloto en el sistema |
+| `2` — Actualizar director | Cambia el director técnico de un equipo |
+| `3` — Transferir piloto | Mueve un piloto de un equipo a otro |
+| `4` — Eliminar piloto | Baja de un piloto (retiro, pérdida de asiento) |
+
+> Los NoSQL **no se escriben directamente**: son entornos de lectura optimizados.
+> Si un NoSQL falla durante la propagación, SQL ya tiene el dato correcto.
+> Re-ejecutar cualquier CRUD vuelve a intentar la sincronización (operación idempotente).
+
+---
+
+## Tolerancia a fallos
+
+El sistema implementa **consistencia eventual**: cada NoSQL se sincroniza de forma independiente. Si una base falla, las demás continúan operando.
+
+**Probar con Cassandra caída:**
+```bash
+# Terminal 1 — bajar Cassandra
+docker stop f1_cassandra
+
+# Terminal 2 — correr el sistema
+python main.py
+# → Arranque: "Entornos de lectura listos: 2/3."
+# → CU1 y CU2 muestran error, CU3-CU6 funcionan normal
+# → CRUD escribe en SQL, propaga a MongoDB y Neo4j, avisa que Cassandra no se actualizó
+
+# Recuperación
+docker start f1_cassandra
+# → El siguiente CRUD sincroniza Cassandra automáticamente
+```
 
 ---
 
@@ -190,4 +213,4 @@ Requiere además instalar las dependencias de sistema del paso 3.
 - **40 carreras históricas** (5 por temporada)
 - **120 resultados** (top 3 por carrera)
 - 3 usuarios del sistema para autenticación
-- Las temporadas 2016-2018 se agregan para que CU5 (`>10 podios AND >5 temporadas`) devuelva resultados reales
+- Las temporadas 2016–2018 permiten que CU5 (`>10 podios AND >5 temporadas`) devuelva resultados con el umbral real del enunciado
