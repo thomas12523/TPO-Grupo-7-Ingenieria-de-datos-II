@@ -425,11 +425,12 @@ def leer_pit_stops_carrera(id_carrera):
 # EJECUCIÓN
 # ==========================================
 
-crear_colecciones_e_indices()
-insertar_datos()
-cu3_pilotos_vuelta_rapida()
-cu4_promedio_pit_stops_por_carrera()
+if __name__ == "__main__":
+    crear_colecciones_e_indices()
+    insertar_datos()
+    cu3_pilotos_vuelta_rapida()
+    cu4_promedio_pit_stops_por_carrera()
 
-# Ejemplos de CRUD
-leer_vueltas_rapidas_piloto('Max Verstappen')
-leer_pit_stops_carrera(1)
+    # Ejemplos de CRUD
+    leer_vueltas_rapidas_piloto('Max Verstappen')
+    leer_pit_stops_carrera(1)

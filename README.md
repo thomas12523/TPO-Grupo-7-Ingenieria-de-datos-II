@@ -102,7 +102,7 @@ docker ps
 ```bash
 python sql.py
 ```
-Crea 10 tablas (Usuarios, Equipos, Pilotos, Circuitos, Temporadas, Carreras, Resultados, PitStops, Penalizaciones, Participacion, Rendimiento) y las pobla con datos de prueba.
+Crea 12 tablas (Equipos, Usuarios, Auditoria, Pilotos, Circuitos, Temporadas, Carreras, Resultados, PitStops, Penalizaciones, Participacion, Rendimiento) y las pobla con datos de prueba.
 
 ### 2. Cassandra — resultados históricos
 ```bash
@@ -132,11 +132,19 @@ python main.py
 
 ---
 
-## Apagar contenedores
+## Manejo de contenedores
 
 ```bash
-docker compose down          # detiene SQL Server y Redis
-docker compose down -v       # además borra los datos guardados
+# Uso diario — solo pausa y reanuda, no borra nada ni re-descarga nada
+docker compose start         # arrancar
+docker compose stop          # pausar
+
+# Primera vez o si se hizo down
+docker compose up -d         # crea e inicia los contenedores (descarga imágenes solo la 1ra vez)
+
+# Solo si querés resetear todo desde cero
+docker compose down          # para y elimina los contenedores (imágenes y datos quedan)
+docker compose down -v       # para, elimina contenedores Y borra los datos guardados
 ```
 
 ---
@@ -178,7 +186,8 @@ cluster = Cluster(['localhost'], connection_class=AsyncioConnection)
 Requiere además instalar las dependencias de sistema del paso 3.
 
 ### Datos de prueba
-- 5 equipos, 5 pilotos, 5 circuitos, 5 temporadas (2019–2023)
-- 25 carreras históricas (5 por temporada)
-- 75 resultados (top 3 por carrera)
+- 5 equipos, 5 pilotos, 5 circuitos, **8 temporadas (2016–2023)**
+- **40 carreras históricas** (5 por temporada)
+- **120 resultados** (top 3 por carrera)
 - 3 usuarios del sistema para autenticación
+- Las temporadas 2016-2018 se agregan para que CU5 (`>10 podios AND >5 temporadas`) devuelva resultados reales

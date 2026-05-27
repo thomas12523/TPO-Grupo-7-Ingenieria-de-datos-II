@@ -26,14 +26,33 @@ RESULTADO quedaba desactualizado.
 
 ---
 
-### 2. Incorporación de la entidad USUARIOS
+### 2. Incorporación de la entidad USUARIOS y FK con EQUIPOS
 **Cambio:** se agregó la entidad USUARIOS al DER con los atributos:
-`id_usuario`, `email`, `password`, `nombre_completo`, `rol`.
+`id_usuario`, `email`, `password`, `nombre_completo`, `rol`, `id_equipo (nullable FK → Equipos)`.
 
 **Justificación:** el sistema requiere autenticación para operar. USUARIOS no estaba
 en el DER original porque el enunciado no especifica gestión de acceso, pero es
 necesaria para implementar el manejo de sesiones con Redis (TTL por usuario).
-El rol permite diferenciar permisos entre administrador, director de carrera y prensa.
+El atributo `IdEquipo` (nullable) conecta USUARIOS al modelo F1: un usuario con
+rol `director` tiene asignado el equipo que gestiona, mientras que `admin` y
+`prensa` lo tienen en NULL. Esto integra USUARIOS al grafo de entidades en lugar
+de dejarlo aislado, y permite consultas del tipo "qué equipo gestiona el director
+que inició sesión ahora mismo" combinando Redis (sesión activa) con SQL (datos del equipo).
+
+---
+
+### 3. Incorporación de la entidad AUDITORIA
+**Cambio:** se agregó la entidad AUDITORIA con los atributos:
+`id_auditoria`, `id_usuario (FK → Usuarios)`, `accion`, `fecha_hora`.
+
+**Justificación:** Redis guarda la sesión **activa** pero cuando el TTL expira
+ese dato desaparece para siempre. AUDITORIA actúa como complemento permanente:
+cada vez que un usuario hace login o logout, se escribe un registro en SQL.
+Esto demuestra la interacción Redis↔SQL requerida por la cátedra:
+- **Redis** sabe quién está conectado ahora (lectura O(1), con expiración automática)
+- **SQL** sabe quién se conectó históricamente (persistente, consultable)
+
+Los tres tipos de acción registrados son: `login`, `logout`, `expiro`.
 
 ---
 
@@ -76,11 +95,57 @@ Cassandra es la opción correcta porque:
 
 ### MongoDB → CU3 y CU4 (documentos semiestructurados)
 
-*(completar cuando se implemente mongoDB.py)*
+**CU3: ¿Qué pilotos han marcado la vuelta más rápida en diversas carreras?**
+**CU4: ¿Cuántos pit stops se realizan en promedio por carrera?**
+
+MongoDB es la opción correcta porque:
+- Los pit stops y vueltas rápidas son datos **semiestructurados**: cada documento
+  puede tener atributos distintos o anidados sin necesidad de un esquema rígido.
+- Las consultas de CU3 y CU4 requieren **agregaciones** (GROUP BY + COUNT/AVG en SQL),
+  que MongoDB resuelve nativamente con su pipeline de agregación (`$group`, `$avg`, `$sum`).
+- Leer todos los pit stops de una carrera es una consulta por `id_carrera` —
+  con el índice `idx_carrera` la búsqueda es O(log n) sin recorrer toda la colección.
+- La colección `vueltas_rapidas` tiene un documento por carrera con el piloto más rápido,
+  lo que hace que CU3 sea un simple `$group` por piloto sin JOINs.
+
+**Colecciones y sus índices:**
+| Colección | Índice | Optimiza |
+|-----------|--------|----------|
+| `vueltas_rapidas` | `(id_carrera, tiempo_vuelta_seg)` | ordenar por tiempo dentro de una carrera |
+| `vueltas_rapidas` | `(nombre_piloto)` | contar vueltas rápidas por piloto (CU3) |
+| `pit_stops` | `(id_carrera)` | agrupar pit stops de una carrera (CU4) |
+| `pit_stops` | `(anio)` | filtrar pit stops por temporada |
 
 ### Neo4j → CU5 y CU6 (relaciones M:N complejas)
 
-*(completar cuando se complete neo4jDB.py)*
+**CU5: ¿Qué pilotos han tenido más de 10 podios Y han corrido en más de 5 temporadas?**
+**CU6: ¿Qué países han tenido mayor cantidad de carreras? ¿Qué país tiene más de 1 circuito?**
+
+Neo4j es la opción correcta porque:
+- Ambas preguntas son **consultas de grafos**: navegar relaciones entre nodos es
+  la operación natural de Neo4j, mientras que en SQL requeriría múltiples JOINs
+  con subqueries y GROUP BY anidados.
+- CU5 recorre la relación `(Piloto)-[:PARTICIPO_EN]->(Temporada)` contando podios
+  acumulados — en Neo4j esto es un `MATCH` + `WITH` + `WHERE`, sin JOINs.
+- CU6 recorre `(Carrera)-[:REALIZADO_EN]->(Circuito)-[:UBICADO_EN]->(Pais)`,
+  una cadena de 3 nodos que en SQL requeriría 2 JOINs + GROUP BY.
+- La relación `PARTICIPO_EN` tiene el atributo `podios` actualizable en el momento
+  en que se registra un resultado en Cassandra, demostrando interacción entre bases.
+
+**Nodos y relaciones:**
+| Nodo | Atributos |
+|------|-----------|
+| `Piloto` | `nombre` |
+| `Temporada` | `anio` |
+| `Carrera` | `nombre` |
+| `Circuito` | `nombre` |
+| `Pais` | `nombre` |
+
+| Relación | Desde→Hasta | Atributos |
+|----------|------------|-----------|
+| `PARTICIPO_EN` | Piloto→Temporada | `podios` |
+| `REALIZADO_EN` | Carrera→Circuito | — |
+| `UBICADO_EN` | Circuito→Pais | — |
 
 ### Redis → Sesiones de usuario
 
@@ -129,12 +194,10 @@ pip install -r requirements.txt
 
 ## Decisiones pendientes
 
-- [ ] Definir si PARTICIPACION registra atributos adicionales (ej: puntos por temporada)
-- [ ] Confirmar estructura de documentos MongoDB para PitStops y Penalizaciones
-- [ ] Confirmar atributos de relaciones en Neo4j (PARTICIPO_EN ya tiene `podios`)
-- [ ] Completar justificación de MongoDB (CU3, CU4) cuando se implemente
-- [ ] Completar justificación de Neo4j (CU5, CU6) cuando se complete
-
-- [ ] Definir si PARTICIPACION registra atributos adicionales (ej: puntos por temporada)
-- [ ] Confirmar estructura de documentos MongoDB para PitStops y Penalizaciones
-- [ ] Confirmar atributos de relaciones en Neo4j (PARTICIPO_EN ya tiene `podios`)
+- [x] Definir si PARTICIPACION registra atributos adicionales → resuelto: sin atributos extra
+- [x] Confirmar estructura de documentos MongoDB para PitStops → resuelto: colecciones `pit_stops` y `vueltas_rapidas`
+- [x] Confirmar atributos de relaciones en Neo4j → resuelto: `PARTICIPO_EN` tiene `podios`
+- [x] Completar justificación de MongoDB (CU3, CU4) → completado arriba
+- [x] Completar justificación de Neo4j (CU5, CU6) → completado arriba
+- [ ] Poblar Neo4j desde SQL Server (función `poblar_desde_sql()` comentada en `neo4jDB.py`)
+- [ ] Corregir bugs en `neo4jDB.py`: `session.run()` fuera del bloque `with` en `pilotosEficientes()`, y `sum(ca)` debe ser `count(ca)` en `paisConMasCarreras()`

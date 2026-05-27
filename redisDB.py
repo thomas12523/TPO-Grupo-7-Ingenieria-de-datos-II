@@ -17,13 +17,45 @@ TTL_NO_CONFIABLE  = 5    # 5 segundos
 
 
 # ==========================================
+# HELPERS INTERNOS
+# ==========================================
+
+def _registrar_auditoria(id_usuario, accion):
+    """
+    Escribe un registro en la tabla Auditoria de SQL Server.
+    Se llama desde login() y logout() para dejar historial permanente.
+    No interrumpe el flujo si falla (la sesión Redis sigue siendo válida).
+
+    Recibe:
+        id_usuario (int): IdUsuario de la tabla Usuarios
+        accion (str): 'login', 'logout' o 'expiro'
+    """
+    try:
+        conn = pymssql.connect(**sql_config)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO Auditoria (IdUsuario, Accion) VALUES (%d, %s)",
+            (id_usuario, accion)
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # No interrumpir el flujo si la auditoría falla
+
+
+# ==========================================
 # SESIONES
 # ==========================================
 
-def login(email, password, dispositivo_confiable: bool):
+def login(email, password):
     """
     Valida credenciales contra la tabla Usuarios de SQL Server y crea sesión en Redis.
-    Si el dispositivo es de confianza la sesión dura 10 minutos, si no 5 segundos.
+    Además registra el evento en la tabla Auditoria (historial permanente en SQL).
+
+    El TTL se determina automáticamente por rol:
+      - admin / director → 600 segundos (dispositivo de confianza)
+      - prensa           →   5 segundos (dispositivo no confiable)
+
     Retorna el TTL asignado, o None si las credenciales son incorrectas.
     """
     # 1. Validar credenciales en SQL Server (fuente de verdad)
@@ -40,37 +72,61 @@ def login(email, password, dispositivo_confiable: bool):
         print(f"Credenciales incorrectas para '{email}'.")
         return None
 
-    # 2. Crear sesión en Redis con TTL
-    ttl = TTL_CONFIABLE if dispositivo_confiable else TTL_NO_CONFIABLE
+    # 2. TTL según rol: prensa = no confiable, admin/director = confiable
+    ttl = TTL_NO_CONFIABLE if usuario['Rol'] == 'prensa' else TTL_CONFIABLE
     clave = f"sesion:{email}"
     r.setex(clave, ttl, usuario['Rol'])
+
+    # 3. Registrar el evento en SQL Auditoria (historial permanente)
+    _registrar_auditoria(usuario['IdUsuario'], 'login')
 
     print(f"Login exitoso — {usuario['NombreCompleto']} ({usuario['Rol']}) — sesión: {ttl}s.")
     return ttl
 
 
-def verificar_sesion(email):
+def verificar_sesion(email, silencioso=False):
     """
     Verifica si la sesión del usuario sigue activa en Redis.
     Retorna el TTL restante en segundos, o None si expiró.
+
+    Recibe:
+        silencioso (bool): si True, no imprime nada (usado en el loop del menú)
     """
     clave = f"sesion:{email}"
     ttl_restante = r.ttl(clave)
 
     if ttl_restante <= 0:
-        print(f"Sesión de '{email}' expirada o inexistente.")
+        if not silencioso:
+            print(f"Sesión de '{email}' expirada o inexistente.")
         return None
 
-    print(f"Sesión de '{email}' activa — {ttl_restante} segundos restantes.")
+    if not silencioso:
+        print(f"Sesión de '{email}' activa — {ttl_restante} segundos restantes.")
     return ttl_restante
 
 
 def logout(email):
-    """Cierra la sesión del usuario eliminando su clave de Redis."""
+    """
+    Cierra la sesión del usuario eliminando su clave de Redis.
+    Además registra el evento en la tabla Auditoria de SQL Server.
+    """
     clave = f"sesion:{email}"
     eliminado = r.delete(clave)
 
     if eliminado:
+        # Registrar logout en SQL Auditoria (historial permanente)
+        try:
+            conn = pymssql.connect(**sql_config)
+            cursor = conn.cursor(as_dict=True)
+            cursor.execute(
+                "SELECT IdUsuario FROM Usuarios WHERE Email = %s", (email,)
+            )
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                _registrar_auditoria(row['IdUsuario'], 'logout')
+        except Exception:
+            pass
         print(f"Sesión de '{email}' cerrada.")
     else:
         print(f"No había sesión activa para '{email}'.")
@@ -126,21 +182,22 @@ def eliminar_dato(clave):
 # EJECUCIÓN
 # ==========================================
 
-# Simula el flujo de la demo del profe:
-# 1. Login con dispositivo de confianza
-login('admin@f1.com', 'admin123', dispositivo_confiable=True)
-verificar_sesion('admin@f1.com')
+if __name__ == "__main__":
+    # Simula el flujo de la demo del profe:
+    # 1. admin → TTL 600s (rol confiable)
+    login('admin@f1.com', 'admin123')
+    verificar_sesion('admin@f1.com')
 
-# 2. Login sin dispositivo de confianza (sesión de 5 segundos)
-login('prensa@f1.com', 'prensa789', dispositivo_confiable=False)
-verificar_sesion('prensa@f1.com')
+    # 2. prensa → TTL 5s (rol no confiable)
+    login('prensa@f1.com', 'prensa789')
+    verificar_sesion('prensa@f1.com')
 
-# 3. Credenciales incorrectas
-login('prensa@f1.com', 'wrongpass', dispositivo_confiable=True)
+    # 3. Credenciales incorrectas
+    login('prensa@f1.com', 'wrongpass')
 
-# 4. Ver todas las sesiones activas
-sesiones_activas()
+    # 4. Ver todas las sesiones activas
+    sesiones_activas()
 
-# 5. Logout manual
-logout('admin@f1.com')
-sesiones_activas()
+    # 5. Logout manual
+    logout('admin@f1.com')
+    sesiones_activas()

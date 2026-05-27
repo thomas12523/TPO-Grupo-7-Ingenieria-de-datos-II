@@ -14,11 +14,20 @@ sql_config = {
     'database': 'master'
 }
 
-cluster = Cluster(['localhost'], connection_class=AsyncioConnection)
-session = cluster.connect()
+cluster = None
+session = None
+
+def conectar():
+    """Establece la conexión con Cassandra. Se llama explícitamente, no al importar."""
+    global cluster, session
+    cluster = Cluster(['localhost'], connection_class=AsyncioConnection)
+    session = cluster.connect()
 
 
 def crear_keyspace_y_tablas():
+    # Conectar la primera vez que se usa (no al importar el módulo)
+    if session is None:
+        conectar()
     # Keyspace = base de datos en Cassandra
     # SimpleStrategy con replication_factor=1 es para desarrollo local (un solo nodo)
     session.execute("""
@@ -281,8 +290,9 @@ def leer_resultados_carrera(anio, id_carrera):
 # EJECUCIÓN
 # ==========================================
 
-crear_keyspace_y_tablas()
-insertar_datos()
-cu1_pilotos_multicampeon()
-cu2_equipos_mas_victorias()
-leer_resultados_carrera(2023, 1)
+if __name__ == "__main__":
+    crear_keyspace_y_tablas()
+    insertar_datos()
+    cu1_pilotos_multicampeon()
+    cu2_equipos_mas_victorias()
+    leer_resultados_carrera(2023, 1)

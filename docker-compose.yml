@@ -31,13 +31,6 @@ services:
     volumes:
       - cassandra_data:/var/lib/cassandra
 
-  # 5. Redis (Para manejo de sesiones con TTL)
-  redis:
-    image: redis:latest
-    container_name: f1_redis
-    ports:
-      - "6379:6379"
-
   # 4. Neo4j (Para Relaciones Pilotos-Temporadas y Países-Circuitos)
   neo4j:
     image: neo4j:latest
@@ -49,6 +42,13 @@ services:
       - NEO4J_AUTH=neo4j/password123
     volumes:
       - neo4j_data:/data
+
+  # 5. Redis (Para manejo de sesiones con TTL)
+  redis:
+    image: redis:latest
+    container_name: f1_redis
+    ports:
+      - "6379:6379"
 
 volumes:
   mongo_data:
