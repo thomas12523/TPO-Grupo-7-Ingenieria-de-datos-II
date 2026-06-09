@@ -25,7 +25,7 @@ def crear_tablas_f1():
     # Establecer conexión
     conn = pymssql.connect(**config)
     cursor = conn.cursor()
-    print("Conectado exitosamente a SQL Server.")
+    pass  # conexión establecida
 
     # Script SQL — orden respeta dependencias FK (12 tablas)
     sql_script = """
@@ -191,7 +191,7 @@ def rellenar_tablas_f1():
     # Establecer conexión
     conn = pymssql.connect(**config)
     cursor = conn.cursor()
-    print("Conectado exitosamente a SQL Server para rellenar tablas.")
+    pass  # conexión establecida
 
     # Insertar datos en las 12 tablas
     insert_script = """
@@ -443,26 +443,32 @@ def insertar_piloto_manual(nombre, fecha_nacimiento, nacionalidad, id_equipo):
     conn = pymssql.connect(**config)
     cursor = conn.cursor()
     try:
-        query = "INSERT INTO Pilotos (Nombre, FechaNacimiento, Nacionalidad, IdEquipo) VALUES (%s, %s, %s, %d)"
-        cursor.execute(query, (nombre, fecha_nacimiento, nacionalidad, id_equipo))
+        cursor.execute(
+            "INSERT INTO Pilotos (Nombre, FechaNacimiento, Nacionalidad, IdEquipo) VALUES (%s, %s, %s, %d)",
+            (nombre, fecha_nacimiento, nacionalidad, id_equipo)
+        )
         conn.commit()
-        print(f"Piloto {nombre} registrado con éxito en SQL Server.")
-    except Exception as e:
-        print(f"Error al insertar piloto: {e}")
+        print(f"  Piloto '{nombre}' registrado en SQL Server.")
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
-# 2. UPDATE 
+# 2. UPDATE
 def actualizar_director_equipo(id_equipo, nuevo_director):
     conn = pymssql.connect(**config)
     cursor = conn.cursor()
     try:
-        query = "UPDATE Equipos SET Director = %s WHERE IdEquipo = %d"
-        cursor.execute(query, (nuevo_director, id_equipo))
+        cursor.execute(
+            "UPDATE Equipos SET Director = %s WHERE IdEquipo = %d",
+            (nuevo_director, id_equipo)
+        )
         conn.commit()
-        print(f"Equipo ID {id_equipo} actualizado con el nuevo director: {nuevo_director}")
-    except Exception as e:
-        print(f"Error al actualizar el director: {e}")
+        print(f"  Equipo ID {id_equipo} actualizado — nuevo director: {nuevo_director}")
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -470,12 +476,15 @@ def cambiar_piloto_de_equipo(id_piloto, nuevo_id_equipo):
     conn = pymssql.connect(**config)
     cursor = conn.cursor()
     try:
-        query = "UPDATE Pilotos SET IdEquipo = %d WHERE IdPiloto = %d"
-        cursor.execute(query, (nuevo_id_equipo, id_piloto))
+        cursor.execute(
+            "UPDATE Pilotos SET IdEquipo = %d WHERE IdPiloto = %d",
+            (nuevo_id_equipo, id_piloto)
+        )
         conn.commit()
-        print(f"Piloto ID {id_piloto} transferido al equipo ID {nuevo_id_equipo}")
-    except Exception as e:
-        print(f"Error al transferir el piloto: {e}")
+        print(f"  Piloto ID {id_piloto} transferido al equipo ID {nuevo_id_equipo}.")
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -495,7 +504,10 @@ def listar_pilotos():
             ORDER BY p.IdPiloto
         """)
         pilotos = cursor.fetchall()
-        print("\n--- Pilotos registrados ---")
+        sep = "─" * 50
+        print(f"\n{sep}")
+        print(f" Pilotos registrados  [SQL Server]")
+        print(sep)
         for p in pilotos:
             print(f"  ID {p['IdPiloto']:>2} | {p['Nombre']:<25} | {p['Nacionalidad']:<15} | {p['Equipo']}")
         return pilotos
@@ -515,7 +527,10 @@ def listar_equipos():
     try:
         cursor.execute("SELECT IdEquipo, Nombre, Director FROM Equipos ORDER BY IdEquipo")
         equipos = cursor.fetchall()
-        print("\n--- Equipos registrados ---")
+        sep = "─" * 50
+        print(f"\n{sep}")
+        print(f" Equipos registrados  [SQL Server]")
+        print(sep)
         for e in equipos:
             print(f"  ID {e['IdEquipo']} | {e['Nombre']:<25} | Director: {e['Director']}")
         return equipos
@@ -530,12 +545,12 @@ def eliminar_piloto(id_piloto):
     conn = pymssql.connect(**config)
     cursor = conn.cursor()
     try:
-        query = "DELETE FROM Pilotos WHERE IdPiloto = %d"
-        cursor.execute(query, (id_piloto,))
+        cursor.execute("DELETE FROM Pilotos WHERE IdPiloto = %d", (id_piloto,))
         conn.commit()
-        print(f"Piloto ID {id_piloto} eliminado correctamente de SQL Server.")
-    except Exception as e:
-        print(f"Error al eliminar el piloto: {e}")
+        print(f"  Piloto ID {id_piloto} eliminado de SQL Server.")
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

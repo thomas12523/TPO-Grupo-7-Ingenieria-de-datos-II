@@ -1,5 +1,6 @@
 import sys
 import time
+from datetime import datetime
 
 # Importamos los módulos de bases de datos con alias para que main los use por nombre corto
 import sql         as db_sql
@@ -7,6 +8,38 @@ import redisDB     as db_redis
 import cassandraDB as db_cassandra
 import mongoDB     as db_mongo
 import neo4jDB     as db_neo4j
+
+
+def _mensaje_error_sql(e):
+    """Traduce errores pymssql comunes a mensajes legibles."""
+    msg = str(e)
+    if '547' in msg:
+        return "ID inexistente — verificá que el ID ingresado exista en la lista."
+    if '2627' in msg or '2601' in msg:
+        return "Ya existe un registro con esos datos."
+    if '241' in msg or 'conversion' in msg.lower():
+        return "Formato de fecha inválido."
+    return msg.split('\\n')[0]  # primera línea del error original
+
+
+def _pedir_int(prompt):
+    """Pide un entero hasta que el usuario ingrese uno válido."""
+    while True:
+        valor = input(prompt).strip()
+        if valor.isdigit():
+            return int(valor)
+        print("  Ingresá un número válido.")
+
+
+def _pedir_fecha(prompt):
+    """Pide una fecha en formato YYYY-MM-DD hasta que sea válida."""
+    while True:
+        valor = input(prompt).strip()
+        try:
+            datetime.strptime(valor, "%Y-%m-%d")
+            return valor
+        except ValueError:
+            print("  Formato inválido. Usá YYYY-MM-DD (ej: 1994-09-01).")
 
 def mostrar_encabezado():
     print("="*60)
@@ -22,38 +55,38 @@ def verificar_conexiones():
     try:
         conn = db_sql.obtener_conexion()
         conn.close()
-        print(" SQL Server: Conectado")
+        print("  ✅ SQL Server  : Conectado")
     except Exception as e:
-        print(f"   SQL Server: Error de conexión -> {e}")
+        print(f"  ❌ SQL Server  : Error -> {e}")
 
     # 2. Redis
     try:
         db_redis.r.ping()
-        print("   Redis: Conectado")
+        print("  ✅ Redis       : Conectado")
     except Exception as e:
-        print(f"   Redis: Error de conexión -> {e}")
+        print(f"  ❌ Redis       : Error -> {e}")
 
     # 3. Cassandra
     try:
         db_cassandra.conectar()
         db_cassandra.session.execute("SELECT release_version FROM system.local")
-        print("   Cassandra: Conectado")
+        print("  ✅ Cassandra   : Conectado")
     except Exception as e:
-        print(f"   Cassandra: Error de conexión -> {e}")
+        print(f"  ❌ Cassandra   : Error -> {e}")
 
     # 4. MongoDB
     try:
         db_mongo.mongo_client.admin.command('ping')
-        print("   MongoDB: Conectado")
+        print("  ✅ MongoDB     : Conectado")
     except Exception as e:
-        print(f"   MongoDB: Error de conexión -> {e}")
+        print(f"  ❌ MongoDB     : Error -> {e}")
 
     # 5. Neo4j
     try:
         db_neo4j.driver.verify_connectivity()
-        print("   Neo4j: Conectado")
+        print("  ✅ Neo4j       : Conectado")
     except Exception as e:
-        print(f"   Neo4j: Error de conexión -> {e}")
+        print(f"  ❌ Neo4j       : Error -> {e}")
         
     print("-" * 60)
 
@@ -64,14 +97,15 @@ def login_sistema():
         email    = input("\nEmail: ").strip()
         password = input("Contraseña: ").strip()
 
-        # TTL se determina automáticamente por rol (prensa=5s, admin/director=600s)
-        ttl = db_redis.login(email, password)
+        resultado = db_redis.login(email, password)
 
-        if ttl:
-            return email
+        if resultado:
+            ttl, nombre = resultado
+            return email, nombre
         else:
             intentos -= 1
-            print(f"Credenciales inválidas. Intentos restantes: {intentos}")
+            if intentos > 0:
+                print(f"  Credenciales inválidas. Intentos restantes: {intentos}")
 
     print("\nAcceso bloqueado. Cerrando sistema.")
     sys.exit()
@@ -91,36 +125,42 @@ def _sincronizar_en_segundo_plano():
     """
     estado = {}
 
-    # Cassandra — resultados históricos para CU1 y CU2
+    # Cassandra — CU1 y CU2
+    print("  ⏳ Cassandra...", end="", flush=True)
     try:
         db_cassandra.crear_keyspace_y_tablas()
         db_cassandra.insertar_datos()
         estado['cassandra'] = True
+        print("\r  ✅ Cassandra   ")
     except Exception as e:
         estado['cassandra'] = str(e)
-        print(f"  [⚠️] Cassandra no actualizada: {e}")
+        print(f"\r  ❌ Cassandra    → {e}")
 
-    # MongoDB — pit stops y penalizaciones para CU3 y CU4
+    # MongoDB — CU3 y CU4
+    print("  ⏳ MongoDB...", end="", flush=True)
     try:
         db_mongo.crear_colecciones_e_indices()
         db_mongo.insertar_datos()
         estado['mongodb'] = True
+        print("\r  ✅ MongoDB     ")
     except Exception as e:
         estado['mongodb'] = str(e)
-        print(f"  [⚠️] MongoDB no actualizada: {e}")
+        print(f"\r  ❌ MongoDB      → {e}")
 
-    # Neo4j — grafo piloto↔temporada y carrera↔circuito para CU5 y CU6
+    # Neo4j — CU5 y CU6
+    print("  ⏳ Neo4j...", end="", flush=True)
     try:
         db_neo4j.poblar_desde_sql()
         estado['neo4j'] = True
+        print("\r  ✅ Neo4j       ")
     except Exception as e:
         estado['neo4j'] = str(e)
-        print(f"  [⚠️] Neo4j no actualizado: {e}")
+        print(f"\r  ❌ Neo4j        → {e}")
 
     fallidas = [db for db, ok in estado.items() if ok is not True]
     if fallidas:
-        print(f"  [⚠️] Entornos de lectura con datos desactualizados: {', '.join(fallidas)}")
-        print(f"       Los datos reales siguen en SQL Server. Re-ejecutar sync los corrige.")
+        print(f"\n  [⚠️] Datos desactualizados en: {', '.join(fallidas)}")
+        print(f"       El dato real sigue en SQL Server. Se corrige en el próximo CRUD.")
     return estado
 
 def menu_crud():
@@ -136,71 +176,68 @@ def menu_crud():
     optimizados, no fuentes de escritura.
     """
     while True:
-        print("\n" + "-"*40)
-        print("      GESTIÓN DE DATOS (CRUD)      ")
-        print("-"*41)
-        print("  Fuente de verdad: SQL Server")
-        print("  Los cambios se propagan automáticamente a Cassandra, MongoDB y Neo4j.")
-        print("-"*41)
-        print("--- Ver datos ---")
-        print("L. Listar Pilotos y Equipos")
-        print("--- Modificar ---")
-        print("1. Insertar nuevo Piloto")
-        print("2. Actualizar Director de Equipo")
-        print("3. Cambiar Piloto de Equipo (Transferencia)")
-        print("4. Eliminar Piloto")
-        print("0. Volver al menú principal")
+        sep = "─" * 50
+        print(f"\n{sep}")
+        print(f"       GESTIÓN DE DATOS (CRUD)  [SQL Server]")
+        print(sep)
+        print("  L. Listar Pilotos y Equipos")
+        print(f"  {'─'*46}")
+        print("  1. Insertar nuevo Piloto")
+        print("  2. Actualizar Director de Equipo")
+        print("  3. Cambiar Piloto de Equipo (Transferencia)")
+        print("  4. Eliminar Piloto")
+        print(f"  {'─'*46}")
+        print("  0. Volver al menú principal")
 
         opcion = input("\nSeleccione una operación: ").strip().upper()
 
         hubo_cambios = False
 
         if opcion == 'L':
-            # READ: mostrar estado actual de SQL antes de operar
             db_sql.listar_pilotos()
             db_sql.listar_equipos()
 
         elif opcion == '1':
-            db_sql.listar_equipos()          # mostrar IDs disponibles antes de pedir input
-            nombre    = input("Nombre del piloto: ")
-            fecha     = input("Fecha de nacimiento (YYYY-MM-DD): ")
-            nac       = input("Nacionalidad: ")
-            id_equipo = int(input("ID del Equipo: "))
+            db_sql.listar_equipos()
+            nombre    = input("  Nombre del piloto: ").strip()
+            fecha     = _pedir_fecha("  Fecha de nacimiento (YYYY-MM-DD): ")
+            nac       = input("  Nacionalidad: ").strip()
+            id_equipo = _pedir_int("  ID del Equipo: ")
             try:
                 db_sql.insertar_piloto_manual(nombre, fecha, nac, id_equipo)
                 hubo_cambios = True
             except Exception as e:
-                print(f"  [❌] Error al insertar en SQL: {e}. No se propagó a los NoSQL.")
+                print(f"  [❌] {_mensaje_error_sql(e)}")
 
         elif opcion == '2':
-            db_sql.listar_equipos()          # mostrar IDs disponibles
-            id_equipo  = int(input("ID del Equipo a modificar: "))
-            nuevo_dir  = input("Nombre del nuevo Director: ")
+            db_sql.listar_equipos()
+            id_equipo = _pedir_int("  ID del Equipo a modificar: ")
+            nuevo_dir = input("  Nombre del nuevo Director: ").strip()
             try:
                 db_sql.actualizar_director_equipo(id_equipo, nuevo_dir)
                 hubo_cambios = True
             except Exception as e:
-                print(f"  [❌] Error al actualizar en SQL: {e}.")
+                print(f"  [❌] {_mensaje_error_sql(e)}")
 
         elif opcion == '3':
-            db_sql.listar_pilotos()          # mostrar IDs antes de pedir transferencia
+            db_sql.listar_pilotos()
             db_sql.listar_equipos()
-            id_piloto    = int(input("ID del Piloto a transferir: "))
-            nuevo_equipo = int(input("ID del nuevo Equipo: "))
+            id_piloto    = _pedir_int("  ID del Piloto a transferir: ")
+            nuevo_equipo = _pedir_int("  ID del nuevo Equipo: ")
             try:
                 db_sql.cambiar_piloto_de_equipo(id_piloto, nuevo_equipo)
                 hubo_cambios = True
             except Exception as e:
-                print(f"  [❌] Error al transferir en SQL: {e}.")
+                print(f"  [❌] {_mensaje_error_sql(e)}")
 
         elif opcion == '4':
-            db_sql.listar_pilotos()          # mostrar IDs antes de borrar
-            id_piloto = int(input("ID del Piloto a eliminar: "))
+            db_sql.listar_pilotos()
+            id_piloto = _pedir_int("  ID del Piloto a eliminar: ")
             try:
                 db_sql.eliminar_piloto(id_piloto)
                 hubo_cambios = True
             except Exception as e:
-                print(f"  [❌] Error al eliminar en SQL: {e}.")
+                print(f"  [❌] {_mensaje_error_sql(e)}")
 
         elif opcion == '0':
             break
@@ -258,11 +295,16 @@ def menu_principal(email):
                 break
             else:
                 print("Opción no válida. Intente nuevamente.")
+
+            # TTL deslizante: cada acción exitosa renueva la sesión
+            if opcion not in ('0',):
+                db_redis.renovar_sesion(email)
+
         except Exception as e:
             print(f"\n  [❌] Error al ejecutar la consulta: {e}")
             print(f"       Verificá que la base de datos correspondiente esté activa.")
         
-        if opcion != '7': 
+        if opcion not in ('7', '3'):
             input("\nPresione ENTER para continuar...")
 
 def main():
@@ -271,26 +313,25 @@ def main():
     # 1. Verificar estado de la infraestructura
     verificar_conexiones()
     
-    # 2. Asegurar esquema SQL inicial
-    print("\nVerificando esquema en la fuente de verdad...")
-    db_sql.crear_tablas_f1() 
-    
+    # 2. Asegurar esquema SQL inicial + datos base (rellenar se llama dentro de crear)
+    print("\n[🗄️ ] Verificando esquema SQL...")
+    db_sql.crear_tablas_f1()
+
     # 3. Autenticación
-    usuario_actual = login_sistema()
-    print(f"\n¡Bienvenido {usuario_actual}!")
+    email_actual, nombre_actual = login_sistema()
     
     # 4. Sincronización inicial: SQL → NoSQL
-    print("\n[🔄] Preparando sistema de consultas...")
+    print("\n[🔄] Sincronizando bases de datos...")
     estado = _sincronizar_en_segundo_plano()
     ok_count = sum(1 for v in estado.values() if v is True)
-    print(f"[{'✅' if ok_count == len(estado) else '⚠️'}] Entornos de lectura listos: {ok_count}/{len(estado)}.")
-    
+    print(f"[{'✅' if ok_count == len(estado) else '⚠️'}] Sistema listo: {ok_count}/{len(estado)} bases sincronizadas.")
+
     # 5. Flujo de trabajo principal
-    menu_principal(usuario_actual)
-    
+    menu_principal(email_actual)
+
     # 6. Cierre seguro
-    db_redis.logout(usuario_actual)
-    print("\n¡Sesión finalizada. Hasta luego!")
+    db_redis.logout(email_actual)
+    print("\n  Sesión finalizada. ¡Hasta luego!")
 
 if __name__ == "__main__":
     main()

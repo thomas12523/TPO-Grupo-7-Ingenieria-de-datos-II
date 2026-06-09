@@ -12,8 +12,7 @@ sql_config = {
     'database': 'master'
 }
 
-TTL_CONFIABLE     = 600  # 10 minutos
-TTL_NO_CONFIABLE  = 5    # 5 segundos
+TTL_SESION = 600  # 10 minutos de inactividad — director y prensa
 
 
 # ==========================================
@@ -52,13 +51,14 @@ def login(email, password):
     Valida credenciales contra la tabla Usuarios de SQL Server y crea sesión en Redis.
     Además registra el evento en la tabla Auditoria (historial permanente en SQL).
 
-    El TTL se determina automáticamente por rol:
-      - admin / director → 600 segundos (dispositivo de confianza)
-      - prensa           →   5 segundos (dispositivo no confiable)
+    TTL según rol:
+      - admin    → sin TTL (sesión permanente hasta logout explícito)
+      - director → 600 segundos de inactividad (TTL deslizante)
+      - prensa   → 600 segundos de inactividad (TTL deslizante)
 
-    Retorna el TTL asignado, o None si las credenciales son incorrectas.
+    Retorna (ttl, nombre) si las credenciales son correctas, None si no.
+      ttl = None para admin (sin expiración), int para el resto.
     """
-    # 1. Validar credenciales en SQL Server (fuente de verdad)
     conn = pymssql.connect(**sql_config)
     cursor = conn.cursor(as_dict=True)
     cursor.execute(
@@ -69,39 +69,64 @@ def login(email, password):
     conn.close()
 
     if not usuario:
-        print(f"Credenciales incorrectas para '{email}'.")
+        print(f"  Credenciales incorrectas.")
         return None
 
-    # 2. TTL según rol: prensa = no confiable, admin/director = confiable
-    ttl = TTL_NO_CONFIABLE if usuario['Rol'] == 'prensa' else TTL_CONFIABLE
     clave = f"sesion:{email}"
-    r.setex(clave, ttl, usuario['Rol'])
 
-    # 3. Registrar el evento en SQL Auditoria (historial permanente)
+    if usuario['Rol'] == 'admin':
+        r.set(clave, usuario['Rol'])  # sin TTL — sesión permanente
+        ttl_display = "sin límite"
+        ttl = None
+    else:
+        r.setex(clave, TTL_SESION, usuario['Rol'])  # TTL deslizante
+        ttl_display = f"{TTL_SESION}s de inactividad"
+        ttl = TTL_SESION
+
     _registrar_auditoria(usuario['IdUsuario'], 'login')
 
-    print(f"Login exitoso — {usuario['NombreCompleto']} ({usuario['Rol']}) — sesión: {ttl}s.")
-    return ttl
+    print(f"  Bienvenido, {usuario['NombreCompleto']} ({usuario['Rol']}) — sesión: {ttl_display}.")
+    return ttl, usuario['NombreCompleto']
+
+
+def renovar_sesion(email):
+    """
+    Resetea el TTL de la sesión activa (TTL deslizante).
+    Solo aplica a roles con TTL — admin no tiene expiración y se omite.
+    Se llama después de cada acción exitosa del usuario en el menú.
+    """
+    clave = f"sesion:{email}"
+    rol = r.get(clave)
+    if rol is None or rol == 'admin':
+        return
+    r.expire(clave, TTL_SESION)
 
 
 def verificar_sesion(email, silencioso=False):
     """
     Verifica si la sesión del usuario sigue activa en Redis.
-    Retorna el TTL restante en segundos, o None si expiró.
 
-    Recibe:
-        silencioso (bool): si True, no imprime nada (usado en el loop del menú)
+    Valores de TTL en Redis:
+      -2 → clave no existe (sesión expirada o nunca creada)
+      -1 → clave existe sin TTL (admin)
+      >0 → segundos restantes
+
+    Retorna el TTL restante (o -1 para admin), None si la sesión no existe.
     """
     clave = f"sesion:{email}"
     ttl_restante = r.ttl(clave)
 
-    if ttl_restante <= 0:
+    if ttl_restante == -2:  # clave no existe → sesión expirada
         if not silencioso:
-            print(f"Sesión de '{email}' expirada o inexistente.")
+            print(f"  Sesión de '{email}' expirada o inexistente.")
         return None
 
     if not silencioso:
-        print(f"Sesión de '{email}' activa — {ttl_restante} segundos restantes.")
+        if ttl_restante == -1:
+            print(f"  Sesión de '{email}' activa — sin límite de tiempo.")
+        else:
+            print(f"  Sesión de '{email}' activa — {ttl_restante}s restantes.")
+
     return ttl_restante
 
 
@@ -114,42 +139,39 @@ def logout(email):
     eliminado = r.delete(clave)
 
     if eliminado:
-        # Registrar logout en SQL Auditoria (historial permanente)
         try:
             conn = pymssql.connect(**sql_config)
             cursor = conn.cursor(as_dict=True)
-            cursor.execute(
-                "SELECT IdUsuario FROM Usuarios WHERE Email = %s", (email,)
-            )
+            cursor.execute("SELECT IdUsuario FROM Usuarios WHERE Email = %s", (email,))
             row = cursor.fetchone()
             conn.close()
             if row:
                 _registrar_auditoria(row['IdUsuario'], 'logout')
         except Exception:
             pass
-        print(f"Sesión de '{email}' cerrada.")
+        print(f"  Sesión de '{email}' cerrada.")
     else:
-        print(f"No había sesión activa para '{email}'.")
+        print(f"  No había sesión activa para '{email}'.")
 
 
 def sesiones_activas():
     """
-    Devuelve todas las sesiones activas con su TTL restante.
-    Útil para mostrar en el GUI cuántos usuarios están conectados.
+    Muestra todas las sesiones activas con su TTL restante.
     """
     claves = r.keys("sesion:*")
-    sesiones = []
 
     print("\n--- Sesiones activas ---")
     if not claves:
         print("  No hay sesiones activas.")
         return []
 
+    sesiones = []
     for clave in claves:
         email = clave.replace("sesion:", "")
         ttl = r.ttl(clave)
+        ttl_display = "sin límite" if ttl == -1 else f"{ttl}s restantes"
         sesiones.append({'email': email, 'ttl_restante': ttl})
-        print(f"  {email} — {ttl} segundos restantes")
+        print(f"  {email} — {ttl_display}")
 
     return sesiones
 
@@ -183,21 +205,14 @@ def eliminar_dato(clave):
 # ==========================================
 
 if __name__ == "__main__":
-    # Simula el flujo de la demo del profe:
-    # 1. admin → TTL 600s (rol confiable)
     login('admin@f1.com', 'admin123')
-    verificar_sesion('admin@f1.com')
+    verificar_sesion('admin@f1.com')        # → sin límite
 
-    # 2. prensa → TTL 5s (rol no confiable)
     login('prensa@f1.com', 'prensa789')
-    verificar_sesion('prensa@f1.com')
+    verificar_sesion('prensa@f1.com')       # → 600s restantes
 
-    # 3. Credenciales incorrectas
-    login('prensa@f1.com', 'wrongpass')
+    login('prensa@f1.com', 'wrongpass')     # → credenciales incorrectas
 
-    # 4. Ver todas las sesiones activas
     sesiones_activas()
-
-    # 5. Logout manual
     logout('admin@f1.com')
     sesiones_activas()

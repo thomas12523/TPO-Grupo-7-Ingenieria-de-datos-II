@@ -29,7 +29,7 @@ def vincular_piloto_temporada(nombrePiloto, anioTemporada):
         ON MATCH SET r.podios = r.podios + 1
         """
         session.run(query, nombre=nombrePiloto, anio=anioTemporada).consume()
-        print("Relacion Creada")
+        pass
 
 def vincular_carrera_circuito_pais(nombreCarrera, nombreCircuito, nombrePais):
     with driver.session() as session:
@@ -89,7 +89,7 @@ def poblar_desde_sql():
     carreras = cursor.fetchall()
     conn.close()
 
-    print(f"SQL Server → {len(podios)} relaciones piloto-temporada, {len(carreras)} carreras leídas.")
+    pass
 
     # Limpiar grafo antes de insertar
     borrarDatosNeo4j()
@@ -113,7 +113,7 @@ def poblar_desde_sql():
             row['NombrePais']
         )
 
-    print(f"Neo4j poblado: {len(podios)} relaciones PARTICIPO_EN, {len(carreras)} carreras.")
+    pass
 
 
 # ==========================================
@@ -130,7 +130,10 @@ def pilotosEficientes():
     - Russell:    ~20 podios en 7 temporadas
     - Leclerc:    ~17 podios en 6 temporadas
     """
-    print("\n--- CU5: Pilotos eficientes (>10 podios, >5 temporadas) ---")
+    sep = "─" * 50
+    print(f"\n{sep}")
+    print(f" CU5 — Pilotos eficientes (>10 podios, >5 temporadas)  [Neo4j]")
+    print(sep)
     with driver.session() as session:
         query = """
         MATCH (p:Piloto)-[r:PARTICIPO_EN]->(t:Temporada)
@@ -149,7 +152,10 @@ def pilotosEficientes():
 
 def paisConMasCarreras():
     """CU6a: Ranking de países por cantidad de carreras históricas."""
-    print("\n--- CU6: Ranking de países por cantidad de carreras ---")
+    sep = "─" * 50
+    print(f"\n{sep}")
+    print(f" CU6 — Ranking de países por carreras históricas  [Neo4j]")
+    print(sep)
     with driver.session() as session:
         query = """
         MATCH (ca:Carrera)-[:REALIZADO_EN]->(c:Circuito)-[:UBICADO_EN]->(p:Pais)
@@ -166,7 +172,10 @@ def paisConMasCarreras():
 
 def paisConMas1Circuito():
     """CU6b: Países con más de 1 circuito registrado."""
-    print("\n--- CU6: Países con más de 1 circuito ---")
+    sep = "─" * 50
+    print(f"\n{sep}")
+    print(f" CU6 — Países con más de 1 circuito  [Neo4j]")
+    print(sep)
     with driver.session() as session:
         query = """
         MATCH (c:Circuito)-[:UBICADO_EN]->(p:Pais)
@@ -190,7 +199,7 @@ def paisConMas1Circuito():
 def borrarDatosNeo4j():
     with driver.session() as session:
         session.run("MATCH (n) DETACH DELETE n").consume()
-        print("Datos borrados exitosamente")
+        pass
 
 def actualizarNombreCircuito(nombreViejo, nombreNuevo):
     with driver.session() as session:

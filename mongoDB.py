@@ -48,7 +48,7 @@ def crear_colecciones_e_indices():
     col_ps.create_index([('id_carrera', ASCENDING)], name='idx_carrera')
     col_ps.create_index([('anio', ASCENDING)], name='idx_anio')
 
-    print("Colecciones e índices creados: vueltas_rapidas, pit_stops.")
+    pass
 
 
 # ==========================================
@@ -120,7 +120,7 @@ def insertar_datos():
     pit_stops = cursor.fetchall()
     conn.close()
 
-    print(f"SQL Server → {len(ganadores)} vueltas rápidas, {len(pit_stops)} pit stops leídos.")
+    pass
 
     # --- Insertar en vueltas_rapidas ---
     col_vr = db['vueltas_rapidas']
@@ -162,7 +162,7 @@ def insertar_datos():
     if docs_ps:
         col_ps.insert_many(docs_ps)
 
-    print("Datos insertados correctamente en MongoDB desde SQL Server.")
+    pass
 
 
 def _tiempo_a_segundos(tiempo_str):
@@ -228,14 +228,41 @@ def cu3_pilotos_vuelta_rapida():
 
     resultado = list(col_vr.aggregate(pipeline))
 
-    print("\n--- CU3: Pilotos con más vueltas rápidas ---")
-    for r in resultado:
-        detalle = ', '.join(
-            f"{c['anio']} {c['circuito']} ({c['tiempo']})"
-            for c in r['carreras']
-        )
-        print(f"  {r['piloto']} ({r['equipo']}): {r['total_vueltas_rapidas']} vuelta(s) rápida(s)")
-        print(f"    → {detalle}")
+    sep = "─" * 50
+    print(f"\n{sep}")
+    print(f" CU3 — Pilotos con la vuelta más rápida  [MongoDB]")
+    print(sep)
+
+    # Resumen: todos los pilotos con su total
+    for i, r in enumerate(resultado, 1):
+        print(f"  {i}. {r['piloto']:<25} {r['total_vueltas_rapidas']} vuelta(s) rápida(s)")
+
+    # Selección de piloto para ver el detalle — loop hasta que elija salir
+    while True:
+        print(f"\n  Número para ver detalle (0 para volver): ", end="")
+        opcion = input().strip()
+
+        if opcion == '0' or opcion == '':
+            break
+
+        if opcion.isdigit():
+            idx = int(opcion) - 1
+            if 0 <= idx < len(resultado):
+                piloto = resultado[idx]
+                print(f"\n{sep}")
+                print(f" {piloto['piloto']} ({piloto['equipo']})  [MongoDB]")
+                print(sep)
+                carreras = sorted(piloto['carreras'], key=lambda c: (c['anio'], c['circuito']))
+                for c in carreras:
+                    print(f"  {c['anio']} — {c['circuito']:<22} {c['tiempo']}")
+                # Remuestra el resumen para facilitar la siguiente elección
+                print(f"\n{sep}")
+                for i, r in enumerate(resultado, 1):
+                    print(f"  {i}. {r['piloto']:<25} {r['total_vueltas_rapidas']} vuelta(s) rápida(s)")
+            else:
+                print(f"  Número inválido.")
+        else:
+            print(f"  Ingresá un número válido.")
 
     return resultado
 
@@ -298,14 +325,17 @@ def cu4_promedio_pit_stops_por_carrera():
     resumen = list(col_ps.aggregate(pipeline_promedio))
     promedio = resumen[0]['promedio_global'] if resumen else 0
 
-    print("\n--- CU4: Pit stops por carrera ---")
+    sep = "─" * 50
+    print(f"\n{sep}")
+    print(f" CU4 — Promedio de pit stops por carrera  [MongoDB]")
+    print(sep)
     for d in detalle:
         print(f"  Carrera {d['id_carrera']} ({d['anio']} - {d['circuito']}): {d['total_pit_stops']} pit stops")
     if resumen:
         r = resumen[0]
         print(f"\n  Resumen global:")
-        print(f"    Carreras con datos: {r['total_carreras']}")
-        print(f"    Total pit stops:    {r['total_pit_stops']}")
+        print(f"    Carreras con datos:   {r['total_carreras']}")
+        print(f"    Total pit stops:      {r['total_pit_stops']}")
         print(f"    Promedio por carrera: {r['promedio_global']:.2f}")
 
     return {'promedio_global': promedio, 'detalle_por_carrera': detalle}

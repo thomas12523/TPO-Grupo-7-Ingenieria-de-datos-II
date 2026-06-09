@@ -35,7 +35,7 @@ def crear_keyspace_y_tablas():
         WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}
     """)
     session.set_keyspace('f1_keyspace')
-    print("Keyspace f1_keyspace listo.")
+    pass
 
     # Tabla principal: la tabla RESULTADO del DER
     # Partition key: (anio, id_carrera) -> todos los resultados de una carrera viven juntos
@@ -81,7 +81,7 @@ def crear_keyspace_y_tablas():
         )
     """)
 
-    print("Tablas creadas: resultados_historicos, campeonatos_por_piloto, victorias_por_equipo.")
+    pass
 
 
 def insertar_datos():
@@ -128,7 +128,7 @@ def insertar_datos():
             campeon_por_anio[anio] = (row['NombrePiloto'], float(row['TotalPuntos']))
 
     conn.close()
-    print(f"Leídos desde SQL Server: {len(resultados)} resultados, {len(campeon_por_anio)} campeones.")
+    pass
 
     stmt_resultado = session.prepare("""
         INSERT INTO resultados_historicos
@@ -165,7 +165,7 @@ def insertar_datos():
     for anio, (campeon, puntos) in campeon_por_anio.items():
         session.execute(stmt_campeon, (campeon, anio, puntos, True))
 
-    print("Datos insertados correctamente en Cassandra desde SQL Server.")
+    pass
 
 
 # ==========================================
@@ -200,7 +200,10 @@ def cu1_pilotos_multicampeon():
     ]
     resultado.sort(key=lambda x: -x['titulos'])
 
-    print("\n--- CU1: Pilotos con múltiples campeonatos ---")
+    sep = "─" * 50
+    print(f"\n{sep}")
+    print(f" CU1 — Pilotos con múltiples campeonatos  [Cassandra]")
+    print(sep)
     for r in resultado:
         print(f"  {r['piloto']}: {r['titulos']} títulos {r['anios']}")
 
@@ -224,7 +227,10 @@ def cu2_equipos_mas_victorias():
         for equipo, total in victorias.most_common()
     ]
 
-    print("\n--- CU2: Equipos con más victorias históricas ---")
+    sep = "─" * 50
+    print(f"\n{sep}")
+    print(f" CU2 — Equipos con más victorias históricas  [Cassandra]")
+    print(sep)
     for r in resultado:
         print(f"  {r['equipo']}: {r['victorias']} victorias")
 

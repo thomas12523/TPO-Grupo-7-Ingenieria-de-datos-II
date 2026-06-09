@@ -187,12 +187,25 @@ Redis es la opción correcta porque:
 **Flujo implementado:**
 1. Usuario ingresa email y password
 2. Se validan contra la tabla `Usuarios` de SQL Server (fuente de verdad)
-3. Si son correctas, se crea la sesión en Redis con TTL según el **rol**:
-   - `admin` / `director` → 600 segundos (usuarios de confianza)
-   - `prensa` → 5 segundos (acceso limitado, no confiable)
-4. El valor guardado en Redis es el **rol** del usuario
-5. Al hacer logout → se elimina la clave manualmente
-6. Cada acción de login/logout se registra en la tabla `Auditoria` de SQL (historial permanente)
+3. Si son correctas, se crea la sesión en Redis según el **rol**:
+   - `admin` → `r.set(clave, rol)` sin TTL — sesión permanente hasta logout explícito
+   - `director` / `prensa` → `r.setex(clave, 600, rol)` — TTL deslizante de 600 segundos
+4. El valor guardado en Redis es el **rol** del usuario (necesario para saber qué TTL aplicar al renovar)
+5. Cada acción exitosa en el menú llama a `renovar_sesion()` → `r.expire(clave, 600)` — resetea el contador
+6. Si el usuario no hace nada por más de 600s → Redis expira la clave automáticamente → el menú detecta TTL=-2 y cierra la sesión
+7. Al hacer logout → se elimina la clave manualmente → se registra en Auditoria
+8. Cada login/logout se registra en la tabla `Auditoria` de SQL (historial permanente)
+
+**Por qué admin sin TTL:**
+Admin es el operador del sistema. No tiene sentido expulsarlo por inactividad —
+puede estar monitoreando sin interactuar. Director y prensa son usuarios externos
+con acceso limitado, por lo que la expiración por inactividad sí aplica.
+
+**Por qué TTL deslizante y no fijo:**
+Un TTL fijo expira aunque el usuario esté activo. Para un portal de consultas,
+lo natural es que la sesión se mantenga mientras el usuario opera y expire solo
+si deja de interactuar. Redis devuelve -2 cuando la clave no existe (expirada)
+y -1 cuando existe sin TTL (admin) — ambos casos se manejan en `verificar_sesion()`.
 
 ---
 
@@ -210,16 +223,28 @@ en SQL generaría un dato huérfano que desaparecería en la próxima sincroniza
 
 | Operación SQL | Narrativa F1 | Propagación |
 |---------------|--------------|-------------|
+| Listar Pilotos/Equipos | Ver estado actual antes de operar | Solo lectura — sin sync |
 | Insertar Piloto | Rookie firma contrato para la temporada | Sync → Cassandra, MongoDB, Neo4j |
 | Actualizar Director | Cambio de director técnico del equipo | Sync → Cassandra, MongoDB, Neo4j |
-| Transferir Piloto | Piloto cambia de equipo (ej: Hamilton a Ferrari) | Sync → Cassandra, MongoDB, Neo4j |
-| Eliminar Piloto | Retiro o pérdida de asiento | Sync → reborra al piloto de todos los NoSQL |
+| Transferir Piloto | Piloto cambia de equipo (ej: Hamilton a Ferrari) | Sync → victorias históricas cambian de equipo en Cassandra |
+| Eliminar Piloto | Retiro o pérdida de asiento | Solo pilotos sin resultados (FK protege integridad) |
+
+### Validación de inputs
+Las operaciones CRUD validan el input antes de llegar a SQL:
+- IDs: se piden hasta recibir un número válido (`_pedir_int`)
+- Fechas: se validan con `datetime.strptime` formato `YYYY-MM-DD` (`_pedir_fecha`)
+- Errores SQL (FK violation, duplicado) se traducen a mensajes legibles en lugar de mostrar el error crudo de pymssql
 
 ### Comportamiento ante fallo en el sync post-CRUD
-- Si SQL confirma → el dato está seguro, independientemente de lo que pase después
+- Si SQL confirma → el dato está seguro independientemente de lo que pase después
 - Si un NoSQL falla en la propagación → SQL tiene el estado correcto
-- El sistema informa cuántas bases se sincronizaron (`✅ SQL actualizado. Entornos NoSQL sincronizados: 2/3`)
-- El siguiente CRUD vuelve a intentar la sincronización completa
+- El sistema informa cuántas bases se sincronizaron (`✅ Entornos NoSQL sincronizados: 2/3`)
+- El siguiente CRUD vuelve a intentar la sincronización completa (operación idempotente)
+
+### Limitación conocida: transferencias históricas
+Cassandra desnormaliza el equipo del piloto al momento del sync (JOIN con `Pilotos.IdEquipo` actual).
+Si se transfiere a un piloto, sus victorias históricas se reasignan al nuevo equipo.
+En producción, `Resultados` debería incluir `IdEquipo` para preservar la atribución histórica.
 
 ---
 
