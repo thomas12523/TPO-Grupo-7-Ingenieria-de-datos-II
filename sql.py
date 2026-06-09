@@ -426,6 +426,27 @@ def rellenar_tablas_f1():
         (4,6),(4,7),(4,8),   -- Russell
         (5,6);               -- Leclerc (temporada debut 2018)
     END
+
+    -- =====================================================================
+    -- TEMPORADAS 2024-2026: solo carreras, sin resultados
+    -- Disponibles para demo del CRUD (insertar resultados frescos)
+    -- =====================================================================
+
+    IF NOT EXISTS (SELECT 1 FROM Temporadas WHERE Anio = 2024)
+    BEGIN
+        INSERT INTO Temporadas (Anio) VALUES (2024), (2025), (2026);
+    END
+
+    -- Carreras 2024 (IdTemporada=9) -> IdCarrera 41-45
+    -- Carreras 2025 (IdTemporada=10) -> IdCarrera 46-50
+    -- Carreras 2026 (IdTemporada=11) -> IdCarrera 51-55
+    IF NOT EXISTS (SELECT 1 FROM Carreras WHERE Fecha = '2024-03-02')
+    BEGIN
+        INSERT INTO Carreras (Fecha, IdCircuito, IdTemporada) VALUES
+        ('2024-03-02', 1, 9),  ('2024-03-16', 2, 9),  ('2024-04-06', 3, 9),  ('2024-04-20', 4, 9),  ('2024-05-04', 5, 9),
+        ('2025-03-01', 1, 10), ('2025-03-15', 2, 10), ('2025-04-05', 3, 10), ('2025-04-19', 4, 10), ('2025-05-03', 5, 10),
+        ('2026-03-07', 1, 11), ('2026-03-21', 2, 11), ('2026-04-11', 3, 11), ('2026-04-25', 4, 11), ('2026-05-09', 5, 11);
+    END
     """
     # Ejecutar el script completo
     cursor.execute(insert_script)
@@ -553,6 +574,188 @@ def eliminar_piloto(id_piloto):
         raise
     finally:
         conn.close()
+
+
+def listar_carreras():
+    """Devuelve y muestra todas las carreras con su circuito y año, ordenadas por año desc."""
+    conn = pymssql.connect(**config)
+    cursor = conn.cursor(as_dict=True)
+    try:
+        cursor.execute("""
+            SELECT c.IdCarrera, c.Fecha, ci.Nombre AS Circuito, t.Anio
+            FROM Carreras c
+            JOIN Circuitos  ci ON c.IdCircuito  = ci.IdCircuito
+            JOIN Temporadas t  ON c.IdTemporada = t.IdTemporada
+            ORDER BY t.Anio DESC, c.IdCarrera ASC
+        """)
+        carreras = cursor.fetchall()
+        sep = "─" * 50
+        print(f"\n{sep}")
+        print(f" Carreras registradas  [SQL Server]")
+        print(sep)
+        for c in carreras:
+            print(f"  ID {c['IdCarrera']:>2} | {c['Anio']} | {str(c['Fecha'])[:10]} | {c['Circuito']}")
+        return carreras
+    except Exception as e:
+        print(f"Error al listar carreras: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def listar_resultados():
+    """Muestra todos los resultados existentes agrupados por carrera."""
+    conn = pymssql.connect(**config)
+    cursor = conn.cursor(as_dict=True)
+    try:
+        cursor.execute("""
+            SELECT r.IdPiloto, r.IdCarrera, p.Nombre AS Piloto, e.Nombre AS Equipo,
+                   r.PosicionFinal, t.Anio, ci.Nombre AS Circuito
+            FROM Resultados r
+            JOIN Pilotos    p  ON r.IdPiloto   = p.IdPiloto
+            JOIN Equipos    e  ON p.IdEquipo   = e.IdEquipo
+            JOIN Carreras   c  ON r.IdCarrera  = c.IdCarrera
+            JOIN Circuitos  ci ON c.IdCircuito = ci.IdCircuito
+            JOIN Temporadas t  ON c.IdTemporada = t.IdTemporada
+            ORDER BY t.Anio DESC, r.IdCarrera, r.PosicionFinal
+        """)
+        rows = cursor.fetchall()
+        sep = "─" * 60
+        print(f"\n{sep}")
+        print(f" Resultados registrados  [SQL Server]")
+        print(sep)
+        carrera_actual = None
+        for r in rows:
+            if r['IdCarrera'] != carrera_actual:
+                carrera_actual = r['IdCarrera']
+                print(f"\n  Carrera ID {r['IdCarrera']} — {r['Anio']} {r['Circuito']}")
+            print(f"    P{r['PosicionFinal']} | Piloto ID {r['IdPiloto']:>2} | {r['Piloto']:<25} | {r['Equipo']}")
+        return rows
+    except Exception as e:
+        print(f"Error al listar resultados: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def listar_pit_stops():
+    """Muestra todos los pit stops existentes agrupados por carrera y piloto."""
+    conn = pymssql.connect(**config)
+    cursor = conn.cursor(as_dict=True)
+    try:
+        cursor.execute("""
+            SELECT ps.IdPiloto, ps.IdCarrera, ps.NumeroParada, ps.TiempoParada,
+                   p.Nombre AS Piloto, t.Anio, ci.Nombre AS Circuito
+            FROM PitStops ps
+            JOIN Pilotos    p  ON ps.IdPiloto  = p.IdPiloto
+            JOIN Carreras   c  ON ps.IdCarrera = c.IdCarrera
+            JOIN Circuitos  ci ON c.IdCircuito = ci.IdCircuito
+            JOIN Temporadas t  ON c.IdTemporada = t.IdTemporada
+            ORDER BY t.Anio DESC, ps.IdCarrera, ps.IdPiloto, ps.NumeroParada
+        """)
+        rows = cursor.fetchall()
+        sep = "─" * 60
+        print(f"\n{sep}")
+        print(f" Pit stops registrados  [SQL Server]")
+        print(sep)
+        clave_actual = None
+        for r in rows:
+            clave = (r['IdCarrera'], r['IdPiloto'])
+            if clave != clave_actual:
+                clave_actual = clave
+                print(f"\n  Carrera ID {r['IdCarrera']} ({r['Anio']} {r['Circuito']}) — Piloto ID {r['IdPiloto']} {r['Piloto']}")
+            print(f"    Parada #{r['NumeroParada']} | {r['TiempoParada']}s")
+        return rows
+    except Exception as e:
+        print(f"Error al listar pit stops: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def insertar_resultado(id_piloto, id_carrera, posicion_final, puntos):
+    """
+    Inserta un resultado en Resultados (fuente de verdad).
+    Después del sync: visible en CU2 (si pos=1), CU3 (si pos=1), CU5 (si pos<=3).
+    """
+    conn = pymssql.connect(**config)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO Resultados (IdPiloto, IdCarrera, PosicionInicial, PosicionFinal, TiempoFinal, Puntos) "
+            "VALUES (%d, %d, %d, %d, %s, %s)",
+            (id_piloto, id_carrera, posicion_final, posicion_final, "1:30:00.000", puntos)
+        )
+        conn.commit()
+        print(f"  Resultado registrado: Piloto ID {id_piloto}, Carrera ID {id_carrera}, P{posicion_final} ({puntos} pts).")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def eliminar_resultado(id_piloto, id_carrera):
+    """Elimina un resultado de Resultados. Retorna True si se eliminó, False si no existía."""
+    conn = pymssql.connect(**config)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM Resultados WHERE IdPiloto = %d AND IdCarrera = %d",
+            (id_piloto, id_carrera)
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            print(f"  No existe resultado para Piloto ID {id_piloto} en Carrera ID {id_carrera}.")
+            return False
+        print(f"  Resultado eliminado: Piloto ID {id_piloto}, Carrera ID {id_carrera}.")
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def insertar_pit_stop_sql(id_piloto, id_carrera, numero_parada, tiempo_parada):
+    """Inserta un pit stop en PitStops. Después del sync: visible en CU4."""
+    conn = pymssql.connect(**config)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO PitStops (IdPiloto, IdCarrera, NumeroParada, TiempoParada) VALUES (%d, %d, %d, %s)",
+            (id_piloto, id_carrera, numero_parada, tiempo_parada)
+        )
+        conn.commit()
+        print(f"  Pit stop #{numero_parada} registrado: Piloto ID {id_piloto}, Carrera ID {id_carrera}.")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def eliminar_pit_stops_piloto(id_piloto, id_carrera):
+    """Elimina todos los pit stops de un piloto en una carrera. Retorna True si se eliminó algo."""
+    conn = pymssql.connect(**config)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "DELETE FROM PitStops WHERE IdPiloto = %d AND IdCarrera = %d",
+            (id_piloto, id_carrera)
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            print(f"  No existen pit stops para Piloto ID {id_piloto} en Carrera ID {id_carrera}.")
+            return False
+        print(f"  {cursor.rowcount} pit stop(s) eliminados: Piloto ID {id_piloto}, Carrera ID {id_carrera}.")
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
 
 # Ejecutar el script completo solo cuando se corre directamente (no al importar)
 if __name__ == "__main__":

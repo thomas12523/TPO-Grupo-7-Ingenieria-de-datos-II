@@ -41,6 +41,17 @@ def _pedir_fecha(prompt):
         except ValueError:
             print("  Formato inválido. Usá YYYY-MM-DD (ej: 1994-09-01).")
 
+def _pedir_float(prompt):
+    """Pide un decimal hasta que el usuario ingrese uno válido."""
+    while True:
+        valor = input(prompt).strip()
+        try:
+            return float(valor)
+        except ValueError:
+            print("  Ingresá un número válido (ej: 2.500).")
+
+_PUNTOS_F1 = {1: 25, 2: 18, 3: 15, 4: 12, 5: 10, 6: 8, 7: 6, 8: 4, 9: 2, 10: 1}
+
 def mostrar_encabezado():
     print("="*60)
     print("       SISTEMA DE GESTIÓN - FÓRMULA 1 (GRUPO 7)       ")
@@ -167,75 +178,77 @@ def menu_crud():
     """
     Submenú CRUD sobre SQL Server (fuente de verdad).
 
-    Toda escritura ocurre primero en SQL (ACID). Si la operación SQL es exitosa,
-    se dispara la sincronización hacia los NoSQL. Si un NoSQL falla durante el sync,
-    SQL ya tiene el dato correcto y el sync es idempotente: re-ejecutarlo en cualquier
-    momento restaura la consistencia sin pérdida de datos (consistencia eventual).
+    Las operaciones modifican tablas que alimentan directamente los casos de uso:
+      - Resultados → CU2 (victorias por equipo), CU3 (vueltas rápidas), CU5 (podios)
+      - PitStops   → CU4 (promedio de pit stops)
 
-    Los NoSQL no se modifican directamente desde este menú: son entornos de lectura
-    optimizados, no fuentes de escritura.
+    Toda escritura ocurre primero en SQL (ACID). El sync posterior actualiza
+    Cassandra, MongoDB y Neo4j de forma independiente (consistencia eventual).
     """
     while True:
         sep = "─" * 50
         print(f"\n{sep}")
         print(f"       GESTIÓN DE DATOS (CRUD)  [SQL Server]")
         print(sep)
-        print("  L. Listar Pilotos y Equipos")
+        print("  L. Listar Pilotos, Equipos y Carreras")
         print(f"  {'─'*46}")
-        print("  1. Insertar nuevo Piloto")
-        print("  2. Actualizar Director de Equipo")
-        print("  3. Cambiar Piloto de Equipo (Transferencia)")
-        print("  4. Eliminar Piloto")
+        print("  1. Registrar Resultado de Carrera      → CU2 / CU3 / CU5")
+        print("  2. Eliminar Resultado de Carrera       → CU2 / CU3 / CU5")
+        print("  3. Registrar Pit Stop                  → CU4")
+        print("  4. Eliminar Pit Stops (Piloto+Carrera) → CU4")
         print(f"  {'─'*46}")
         print("  0. Volver al menú principal")
 
         opcion = input("\nSeleccione una operación: ").strip().upper()
-
         hubo_cambios = False
 
         if opcion == 'L':
             db_sql.listar_pilotos()
             db_sql.listar_equipos()
+            db_sql.listar_carreras()
 
         elif opcion == '1':
-            db_sql.listar_equipos()
-            nombre    = input("  Nombre del piloto: ").strip()
-            fecha     = _pedir_fecha("  Fecha de nacimiento (YYYY-MM-DD): ")
-            nac       = input("  Nacionalidad: ").strip()
-            id_equipo = _pedir_int("  ID del Equipo: ")
+            db_sql.listar_pilotos()
+            db_sql.listar_carreras()
+            id_piloto  = _pedir_int("  ID del Piloto: ")
+            id_carrera = _pedir_int("  ID de la Carrera: ")
+            posicion   = _pedir_int("  Posición final (1=victoria, ≤3=podio): ")
+            puntos     = _PUNTOS_F1.get(posicion, 0)
+            print(f"  Puntos automáticos: {puntos}")
             try:
-                db_sql.insertar_piloto_manual(nombre, fecha, nac, id_equipo)
+                db_sql.insertar_resultado(id_piloto, id_carrera, posicion, puntos)
                 hubo_cambios = True
             except Exception as e:
                 print(f"  [❌] {_mensaje_error_sql(e)}")
 
         elif opcion == '2':
-            db_sql.listar_equipos()
-            id_equipo = _pedir_int("  ID del Equipo a modificar: ")
-            nuevo_dir = input("  Nombre del nuevo Director: ").strip()
+            db_sql.listar_resultados()
+            id_piloto  = _pedir_int("  ID del Piloto: ")
+            id_carrera = _pedir_int("  ID de la Carrera: ")
             try:
-                db_sql.actualizar_director_equipo(id_equipo, nuevo_dir)
-                hubo_cambios = True
+                hubo_cambios = db_sql.eliminar_resultado(id_piloto, id_carrera)
             except Exception as e:
                 print(f"  [❌] {_mensaje_error_sql(e)}")
 
         elif opcion == '3':
             db_sql.listar_pilotos()
-            db_sql.listar_equipos()
-            id_piloto    = _pedir_int("  ID del Piloto a transferir: ")
-            nuevo_equipo = _pedir_int("  ID del nuevo Equipo: ")
+            db_sql.listar_carreras()
+            id_piloto     = _pedir_int("  ID del Piloto: ")
+            id_carrera    = _pedir_int("  ID de la Carrera: ")
+            numero_parada = _pedir_int("  Número de parada (1, 2, 3...): ")
+            tiempo_parada = _pedir_float("  Tiempo de parada en segundos (ej: 2.500): ")
             try:
-                db_sql.cambiar_piloto_de_equipo(id_piloto, nuevo_equipo)
+                db_sql.insertar_pit_stop_sql(id_piloto, id_carrera, numero_parada, tiempo_parada)
                 hubo_cambios = True
             except Exception as e:
                 print(f"  [❌] {_mensaje_error_sql(e)}")
 
         elif opcion == '4':
-            db_sql.listar_pilotos()
-            id_piloto = _pedir_int("  ID del Piloto a eliminar: ")
+            db_sql.listar_pit_stops()
+            id_piloto  = _pedir_int("  ID del Piloto: ")
+            id_carrera = _pedir_int("  ID de la Carrera: ")
             try:
-                db_sql.eliminar_piloto(id_piloto)
-                hubo_cambios = True
+                hubo_cambios = db_sql.eliminar_pit_stops_piloto(id_piloto, id_carrera)
             except Exception as e:
                 print(f"  [❌] {_mensaje_error_sql(e)}")
 

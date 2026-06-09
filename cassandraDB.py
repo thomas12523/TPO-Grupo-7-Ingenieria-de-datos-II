@@ -128,7 +128,11 @@ def insertar_datos():
             campeon_por_anio[anio] = (row['NombrePiloto'], float(row['TotalPuntos']))
 
     conn.close()
-    pass
+
+    # Limpiar tablas antes de reinsertar para que el sync sea idempotente
+    session.execute("TRUNCATE resultados_historicos")
+    session.execute("TRUNCATE victorias_por_equipo")
+    session.execute("TRUNCATE campeonatos_por_piloto")
 
     stmt_resultado = session.prepare("""
         INSERT INTO resultados_historicos

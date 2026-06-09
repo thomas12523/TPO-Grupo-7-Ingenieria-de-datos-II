@@ -83,7 +83,7 @@ El sistema implementa **consistencia eventual** (modelo BASE) para la capa NoSQL
 
 - **SQL Server es ACID**: toda escritura en SQL es atómica y durable. Es la única fuente de verdad.
 - **Los NoSQL son entornos de lectura**: nunca se escriben directamente desde el flujo principal. Solo se actualizan vía sincronización desde SQL.
-- **La sincronización es idempotente**: la función `_sincronizar_en_segundo_plano()` borra y reinsertta todos los datos en cada NoSQL. Ejecutarla N veces produce el mismo resultado. Esto permite recuperar la consistencia en cualquier momento sin lógica de reconciliación.
+- **La sincronización es idempotente**: la función `_sincronizar_en_segundo_plano()` borra y reinsertta todos los datos en cada NoSQL. Ejecutarla N veces produce el mismo resultado. Esto permite recuperar la consistencia en cualquier momento sin lógica de reconciliación. MongoDB usa `delete_many({})` y Cassandra usa `TRUNCATE` antes de reinsertar.
 
 ### Flujo de escritura
 ```
@@ -219,32 +219,34 @@ entornos de lectura y nunca reciben escrituras directas desde el flujo principal
 la garantía de consistencia. Un insert en Cassandra sin el correspondiente insert
 en SQL generaría un dato huérfano que desaparecería en la próxima sincronización.
 
-### Operaciones implementadas y su narrativa F1
+### Operaciones implementadas y su impacto en los CUs
 
-| Operación SQL | Narrativa F1 | Propagación |
-|---------------|--------------|-------------|
-| Listar Pilotos/Equipos | Ver estado actual antes de operar | Solo lectura — sin sync |
-| Insertar Piloto | Rookie firma contrato para la temporada | Sync → Cassandra, MongoDB, Neo4j |
-| Actualizar Director | Cambio de director técnico del equipo | Sync → Cassandra, MongoDB, Neo4j |
-| Transferir Piloto | Piloto cambia de equipo (ej: Hamilton a Ferrari) | Sync → victorias históricas cambian de equipo en Cassandra |
-| Eliminar Piloto | Retiro o pérdida de asiento | Solo pilotos sin resultados (FK protege integridad) |
+Las operaciones CRUD modifican las tablas `Resultados` y `PitStops` de SQL Server, que son exactamente las que alimentan los casos de uso NoSQL. Esto hace que el impacto sea directo y verificable.
+
+| Operación | Tabla SQL | CU impactado tras el sync |
+|-----------|-----------|--------------------------|
+| Listar Pilotos / Equipos / Carreras | — | Solo lectura, sin sync |
+| Registrar Resultado (pos=1) | `Resultados` | CU2: equipo suma victoria · CU3: piloto aparece en vueltas rápidas |
+| Registrar Resultado (pos≤3) | `Resultados` | CU5: piloto suma podio y/o temporada |
+| Eliminar Resultado | `Resultados` | Revierte CU2, CU3, CU5 |
+| Registrar Pit Stop | `PitStops` | CU4: promedio de pit stops sube |
+| Eliminar Pit Stops | `PitStops` | CU4: promedio de pit stops baja |
+
+**Puntos F1 automáticos:** el sistema calcula los puntos según la posición ingresada (1→25, 2→18, 3→15, 4→12 …) para no pedirlos manualmente.
+
+**Carreras de demo (2024–2026):** las carreras ID 41–55 no tienen resultados pre-cargados, lo que permite insertar datos frescos sin colisionar con registros históricos existentes. En producción estas serían las carreras de la temporada en curso.
 
 ### Validación de inputs
-Las operaciones CRUD validan el input antes de llegar a SQL:
-- IDs: se piden hasta recibir un número válido (`_pedir_int`)
-- Fechas: se validan con `datetime.strptime` formato `YYYY-MM-DD` (`_pedir_fecha`)
+- IDs: se piden hasta recibir un número entero válido (`_pedir_int`)
+- Decimales: se piden hasta recibir un float válido (`_pedir_float`) — usado para tiempo de pit stop
 - Errores SQL (FK violation, duplicado) se traducen a mensajes legibles en lugar de mostrar el error crudo de pymssql
+- Operaciones de eliminación verifican `cursor.rowcount`: si ninguna fila fue afectada, informan que el registro no existe y **no disparan el sync** innecesariamente
 
 ### Comportamiento ante fallo en el sync post-CRUD
 - Si SQL confirma → el dato está seguro independientemente de lo que pase después
 - Si un NoSQL falla en la propagación → SQL tiene el estado correcto
 - El sistema informa cuántas bases se sincronizaron (`✅ Entornos NoSQL sincronizados: 2/3`)
 - El siguiente CRUD vuelve a intentar la sincronización completa (operación idempotente)
-
-### Limitación conocida: transferencias históricas
-Cassandra desnormaliza el equipo del piloto al momento del sync (JOIN con `Pilotos.IdEquipo` actual).
-Si se transfiere a un piloto, sus victorias históricas se reasignan al nuevo equipo.
-En producción, `Resultados` debería incluir `IdEquipo` para preservar la atribución histórica.
 
 ---
 
@@ -298,3 +300,7 @@ pip install -r requirements.txt
 - [x] Implementar `poblar_desde_sql()` en Neo4j → implementado, lee desde SQL y puebla el grafo
 - [x] Corregir bugs en `neo4jDB.py` → resueltos: `.consume()` en todas las escrituras, `count(ca)` en CU6
 - [x] CU5 umbral `>5 temporadas` sin datos suficientes → resuelto agregando temporadas 2016-2018
+- [x] CRUD sin impacto visible en CUs → rediseñado para operar sobre `Resultados` y `PitStops` directamente
+- [x] Sync de Cassandra no era idempotente en deletes → corregido con `TRUNCATE` antes de reinsertar
+- [x] Deletes sin validación de existencia → `cursor.rowcount` previene sync innecesario si no hay filas afectadas
+- [x] Races vacías para demo → temporadas 2024-2026 (carreras 41-55) sin resultados pre-cargados

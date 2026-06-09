@@ -71,8 +71,14 @@ Verificar que los 5 contenedores estén corriendo:
 docker ps --format "table {{.Names}}\t{{.Status}}"
 ```
 
-> **Cassandra tarda ~30 segundos** en estar lista. Confirmar con:
-> `docker logs f1_cassandra 2>&1 | tail -3`
+> **Cassandra tarda 1-2 minutos** en estar lista. Confirmar con:
+> ```bash
+> docker logs f1_cassandra 2>&1 | grep "Starting listening for CQL clients"
+> ```
+> O probar cada 15s hasta que responda:
+> ```bash
+> docker exec f1_cassandra cqlsh -e "SELECT release_version FROM system.local" 2>/dev/null
+> ```
 
 ---
 
@@ -181,47 +187,90 @@ RETURN p.nombre, count(ca) AS carreras ORDER BY carreras DESC
 
 ### Bloque 3 — CRUD con sincronización visible
 
-**Objetivo: transferir a Verstappen a McLaren y mostrar el cambio en Cassandra.**
+**Objetivo: registrar una victoria de Perez en 2024 y ver el impacto en CU2, CU3 y CU5.**
 
-**Paso 1 — Estado antes (T4):**
+Las carreras 41–55 (temporadas 2024–2026) no tienen resultados pre-cargados — son el espacio limpio para el CRUD demo.
+
+**Paso 1 — Estado antes**
+
+App (T1 opción 2):
+```
+Red Bull Racing: 19 victorias
+```
+
+App (T1 opción 5):
+```
+Perez NO aparece — tiene 5 temporadas (umbral es >5)
+```
+
+T4 — Cassandra:
 ```sql
 SELECT COUNT(*) FROM victorias_por_equipo WHERE nombre_equipo = 'Red Bull Racing';
 -- → 19
-SELECT COUNT(*) FROM victorias_por_equipo WHERE nombre_equipo = 'McLaren';
--- → 0
 ```
 
-**Paso 2 — Insertar piloto nuevo (T1: opción 7 → 1):**
-```
-Nombre: Carlos Sainz / Fecha: 1994-09-01 / Nacionalidad: Española / Equipo: 3
-```
-Verificar en T2:
-```sql
-SELECT IdPiloto, Nombre, IdEquipo FROM Pilotos; GO
+T5 — MongoDB:
+```javascript
+db.vueltas_rapidas.countDocuments({nombre_piloto: "Sergio Perez"})
+// → 0
 ```
 
-**Paso 3 — Transferir Verstappen a McLaren (T1: opción 7 → 3):**
+**Paso 2 — Registrar victoria (T1: opción 7 → 1)**
 ```
-Piloto ID: 1 → Equipo ID: 4
+ID del Piloto:  2       (Sergio Perez)
+ID de la Carrera: 41   (2024 - Monza)
+Posición final: 1
+Puntos automáticos: 25
 ```
 
-**Paso 4 — Verificar sync en Cassandra (T4):**
+El sistema muestra `3/3 bases sincronizadas`.
+
+**Paso 3 — Verificar en las 3 bases**
+
+App T1 opción 2 — CU2:
+```
+Red Bull Racing: 20 victorias   ← subió
+```
+
+App T1 opción 3 — CU3:
+```
+Sergio Perez: 1 vuelta rápida   ← aparece
+```
+
+App T1 opción 5 — CU5:
+```
+Sergio Perez: 16 podios en 6 temporadas   ← aparece (antes tenía 5 temporadas)
+```
+
+T4 — Cassandra:
 ```sql
 SELECT COUNT(*) FROM victorias_por_equipo WHERE nombre_equipo = 'Red Bull Racing';
--- → 0  (cambió)
-SELECT COUNT(*) FROM victorias_por_equipo WHERE nombre_equipo = 'McLaren';
--- → 19 (sincronizado)
+-- → 20
 ```
 
-**Paso 5 — Confirmar con CU2 desde la app (T1: opción 2):**
-- McLaren ahora aparece con victorias — dato consistente entre SQL, Cassandra y la app.
-
-**Paso 6 — Eliminar Carlos Sainz (T1: opción 7 → 4):**
-- Verificar con `L` que desapareció.
-
-**Paso 7 — Probar validación (T1: opción 7 → 1):**
+T5 — MongoDB:
+```javascript
+db.vueltas_rapidas.countDocuments({nombre_piloto: "Sergio Perez"})
+// → 1
 ```
-ID del Equipo: 99
+
+T2 — SQL Server (fuente de verdad):
+```sql
+SELECT IdPiloto, IdCarrera, PosicionFinal, Puntos FROM Resultados WHERE IdCarrera = 41; GO
+-- → aparece la fila recién insertada
+```
+
+**Paso 4 — Eliminar el resultado (T1: opción 7 → 2)**
+```
+ID del Piloto:  2
+ID de la Carrera: 41
+```
+
+App opción 2 → Red Bull vuelve a 19. Perez desaparece de CU3 y CU5. El sync revierte todo automáticamente.
+
+**Paso 5 — Probar validación (T1: opción 7 → 1)**
+```
+ID de la Carrera: 999
 → [❌] ID inexistente — verificá que el ID ingresado exista en la lista.
 → Sin sync, sin crash.
 ```
@@ -319,8 +368,10 @@ cluster = Cluster(['localhost'], connection_class=AsyncioConnection)
 ```
 
 ### Datos de prueba
-- 5 equipos, 5 pilotos, 5 circuitos, **8 temporadas (2016–2023)**
-- **40 carreras históricas** (5 por temporada)
-- **120 resultados** (top 3 por carrera)
+- 5 equipos, 5 pilotos, 5 circuitos, **11 temporadas (2016–2026)**
+- **55 carreras** (5 por temporada)
+  - Carreras 1–40 (2016–2023): con resultados y pit stops pre-cargados
+  - Carreras 41–55 (2024–2026): **sin resultados** — disponibles para el CRUD demo
+- **120 resultados** históricos (top 3 por carrera, temporadas 2016–2023)
 - 3 usuarios del sistema
-- Temporadas 2016–2018 incluidas para que CU5 (`>10 podios AND >5 temporadas`) devuelva resultados reales
+- Temporadas 2016–2018 incluidas para que CU5 (`>10 podios AND >5 temporadas`) devuelva resultados reales con datos históricos
