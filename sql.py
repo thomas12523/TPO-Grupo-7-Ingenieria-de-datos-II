@@ -176,6 +176,19 @@ def crear_tablas_f1():
             PRIMARY KEY (IdEquipo, IdCircuito)
         );
     END
+
+    -- 13. HistorialEquipos (en qué escudería estuvo cada piloto y durante qué período)
+    -- AnioHasta NULL = sigue activo en el equipo
+    IF OBJECT_ID('dbo.HistorialEquipos', 'U') IS NULL
+    BEGIN
+        CREATE TABLE HistorialEquipos (
+            IdHistorial INT PRIMARY KEY IDENTITY(1,1),
+            IdPiloto    INT NOT NULL FOREIGN KEY REFERENCES Pilotos(IdPiloto),
+            IdEquipo    INT NOT NULL FOREIGN KEY REFERENCES Equipos(IdEquipo),
+            AnioDesde   INT NOT NULL,
+            AnioHasta   INT NULL
+        );
+    END
     """
     cursor.execute(sql_script)
     conn.commit()
@@ -447,6 +460,18 @@ def rellenar_tablas_f1():
         ('2025-03-01', 1, 10), ('2025-03-15', 2, 10), ('2025-04-05', 3, 10), ('2025-04-19', 4, 10), ('2025-05-03', 5, 10),
         ('2026-03-07', 1, 11), ('2026-03-21', 2, 11), ('2026-04-11', 3, 11), ('2026-04-25', 4, 11), ('2026-05-09', 5, 11);
     END
+
+    -- HistorialEquipos: período de cada piloto en su escudería
+    -- AnioHasta NULL = sigue activo
+    IF NOT EXISTS (SELECT 1 FROM HistorialEquipos WHERE IdPiloto = 1)
+    BEGIN
+        INSERT INTO HistorialEquipos (IdPiloto, IdEquipo, AnioDesde, AnioHasta) VALUES
+        (1, 2, 2016, NULL),   -- Verstappen → Red Bull Racing (2016-presente)
+        (2, 2, 2019, NULL),   -- Perez      → Red Bull Racing (2019-presente)
+        (3, 1, 2016, 2023),   -- Hamilton   → Mercedes AMG   (2016-2023)
+        (4, 1, 2016, NULL),   -- Russell    → Mercedes AMG   (2016-presente)
+        (5, 3, 2018, NULL);   -- Leclerc    → Ferrari        (2018-presente)
+    END
     """
     # Ejecutar el script completo
     cursor.execute(insert_script)
@@ -576,23 +601,49 @@ def eliminar_piloto(id_piloto):
         conn.close()
 
 
-def listar_carreras():
-    """Devuelve y muestra todas las carreras con su circuito y año, ordenadas por año desc."""
+def listar_anios():
+    """Retorna lista de años con temporadas registradas, en orden cronológico."""
+    conn = pymssql.connect(**config)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT Anio FROM Temporadas ORDER BY Anio ASC")
+        return [row[0] for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+def listar_carreras(anio=None):
+    """
+    Muestra carreras ordenadas cronológicamente.
+    Si se pasa anio, filtra solo esa temporada.
+    """
     conn = pymssql.connect(**config)
     cursor = conn.cursor(as_dict=True)
     try:
-        cursor.execute("""
-            SELECT c.IdCarrera, c.Fecha, ci.Nombre AS Circuito, t.Anio
-            FROM Carreras c
-            JOIN Circuitos  ci ON c.IdCircuito  = ci.IdCircuito
-            JOIN Temporadas t  ON c.IdTemporada = t.IdTemporada
-            ORDER BY t.Anio DESC, c.IdCarrera ASC
-        """)
+        if anio:
+            cursor.execute("""
+                SELECT c.IdCarrera, c.Fecha, ci.Nombre AS Circuito, t.Anio
+                FROM Carreras c
+                JOIN Circuitos  ci ON c.IdCircuito  = ci.IdCircuito
+                JOIN Temporadas t  ON c.IdTemporada = t.IdTemporada
+                WHERE t.Anio = %d
+                ORDER BY c.IdCarrera ASC
+            """, (anio,))
+        else:
+            cursor.execute("""
+                SELECT c.IdCarrera, c.Fecha, ci.Nombre AS Circuito, t.Anio
+                FROM Carreras c
+                JOIN Circuitos  ci ON c.IdCircuito  = ci.IdCircuito
+                JOIN Temporadas t  ON c.IdTemporada = t.IdTemporada
+                ORDER BY t.Anio ASC, c.IdCarrera ASC
+            """)
         carreras = cursor.fetchall()
         sep = "─" * 50
+        titulo = f" Carreras {anio}  [SQL Server]" if anio else " Carreras registradas  [SQL Server]"
         print(f"\n{sep}")
-        print(f" Carreras registradas  [SQL Server]")
+        print(titulo)
         print(sep)
+        if not carreras:
+            print(f"  No hay carreras para el año {anio}.")
         for c in carreras:
             print(f"  ID {c['IdCarrera']:>2} | {c['Anio']} | {str(c['Fecha'])[:10]} | {c['Circuito']}")
         return carreras
@@ -603,12 +654,13 @@ def listar_carreras():
         conn.close()
 
 
-def listar_resultados():
-    """Muestra todos los resultados existentes agrupados por carrera."""
+def listar_resultados(anio=None):
+    """Muestra resultados existentes agrupados por carrera. Si se pasa anio, filtra esa temporada."""
     conn = pymssql.connect(**config)
     cursor = conn.cursor(as_dict=True)
     try:
-        cursor.execute("""
+        filtro = "WHERE t.Anio = %d" % anio if anio else ""
+        cursor.execute(f"""
             SELECT r.IdPiloto, r.IdCarrera, p.Nombre AS Piloto, e.Nombre AS Equipo,
                    r.PosicionFinal, t.Anio, ci.Nombre AS Circuito
             FROM Resultados r
@@ -617,13 +669,17 @@ def listar_resultados():
             JOIN Carreras   c  ON r.IdCarrera  = c.IdCarrera
             JOIN Circuitos  ci ON c.IdCircuito = ci.IdCircuito
             JOIN Temporadas t  ON c.IdTemporada = t.IdTemporada
-            ORDER BY t.Anio DESC, r.IdCarrera, r.PosicionFinal
+            {filtro}
+            ORDER BY t.Anio ASC, r.IdCarrera, r.PosicionFinal
         """)
         rows = cursor.fetchall()
+        titulo = f" Resultados {anio}  [SQL Server]" if anio else " Resultados registrados  [SQL Server]"
         sep = "─" * 60
         print(f"\n{sep}")
-        print(f" Resultados registrados  [SQL Server]")
+        print(titulo)
         print(sep)
+        if not rows:
+            print(f"  No hay resultados para el año {anio}.")
         carrera_actual = None
         for r in rows:
             if r['IdCarrera'] != carrera_actual:
@@ -638,12 +694,13 @@ def listar_resultados():
         conn.close()
 
 
-def listar_pit_stops():
-    """Muestra todos los pit stops existentes agrupados por carrera y piloto."""
+def listar_pit_stops(anio=None):
+    """Muestra pit stops existentes agrupados por carrera/piloto. Si se pasa anio, filtra esa temporada."""
     conn = pymssql.connect(**config)
     cursor = conn.cursor(as_dict=True)
     try:
-        cursor.execute("""
+        filtro = "WHERE t.Anio = %d" % anio if anio else ""
+        cursor.execute(f"""
             SELECT ps.IdPiloto, ps.IdCarrera, ps.NumeroParada, ps.TiempoParada,
                    p.Nombre AS Piloto, t.Anio, ci.Nombre AS Circuito
             FROM PitStops ps
@@ -651,13 +708,17 @@ def listar_pit_stops():
             JOIN Carreras   c  ON ps.IdCarrera = c.IdCarrera
             JOIN Circuitos  ci ON c.IdCircuito = ci.IdCircuito
             JOIN Temporadas t  ON c.IdTemporada = t.IdTemporada
-            ORDER BY t.Anio DESC, ps.IdCarrera, ps.IdPiloto, ps.NumeroParada
+            {filtro}
+            ORDER BY t.Anio ASC, ps.IdCarrera, ps.IdPiloto, ps.NumeroParada
         """)
         rows = cursor.fetchall()
+        titulo = f" Pit stops {anio}  [SQL Server]" if anio else " Pit stops registrados  [SQL Server]"
         sep = "─" * 60
         print(f"\n{sep}")
-        print(f" Pit stops registrados  [SQL Server]")
+        print(titulo)
         print(sep)
+        if not rows:
+            print(f"  No hay pit stops para el año {anio}.")
         clave_actual = None
         for r in rows:
             clave = (r['IdCarrera'], r['IdPiloto'])

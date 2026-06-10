@@ -41,6 +41,20 @@ def _pedir_fecha(prompt):
         except ValueError:
             print("  Formato inválido. Usá YYYY-MM-DD (ej: 1994-09-01).")
 
+def _pedir_anio_filtro():
+    """Muestra temporadas disponibles y pide elegir una. ENTER = ver todas."""
+    anios = db_sql.listar_anios()
+    print(f"  Temporadas: {' | '.join(str(a) for a in anios)}")
+    valor = input("  Año (4 dígitos o 2, ej: 26 → 2026. ENTER para ver todas): ").strip()
+    if not valor:
+        return None
+    if valor.isdigit():
+        anio = int(valor)
+        if anio < 100:
+            anio += 2000
+        return anio if anio in anios else None
+    return None
+
 def _pedir_float(prompt):
     """Pide un decimal hasta que el usuario ingrese uno válido."""
     while True:
@@ -208,10 +222,11 @@ def menu_crud():
             db_sql.listar_carreras()
 
         elif opcion == '1':
-            db_sql.listar_pilotos()
-            db_sql.listar_carreras()
-            id_piloto  = _pedir_int("  ID del Piloto: ")
+            anio_filtro = _pedir_anio_filtro()
+            db_sql.listar_carreras(anio_filtro)
             id_carrera = _pedir_int("  ID de la Carrera: ")
+            db_sql.listar_pilotos()
+            id_piloto  = _pedir_int("  ID del Piloto: ")
             posicion   = _pedir_int("  Posición final (1=victoria, ≤3=podio): ")
             puntos     = _PUNTOS_F1.get(posicion, 0)
             print(f"  Puntos automáticos: {puntos}")
@@ -222,19 +237,21 @@ def menu_crud():
                 print(f"  [❌] {_mensaje_error_sql(e)}")
 
         elif opcion == '2':
-            db_sql.listar_resultados()
-            id_piloto  = _pedir_int("  ID del Piloto: ")
+            anio_filtro = _pedir_anio_filtro()
+            db_sql.listar_resultados(anio_filtro)
             id_carrera = _pedir_int("  ID de la Carrera: ")
+            id_piloto  = _pedir_int("  ID del Piloto: ")
             try:
                 hubo_cambios = db_sql.eliminar_resultado(id_piloto, id_carrera)
             except Exception as e:
                 print(f"  [❌] {_mensaje_error_sql(e)}")
 
         elif opcion == '3':
-            db_sql.listar_pilotos()
-            db_sql.listar_carreras()
-            id_piloto     = _pedir_int("  ID del Piloto: ")
+            anio_filtro = _pedir_anio_filtro()
+            db_sql.listar_carreras(anio_filtro)
             id_carrera    = _pedir_int("  ID de la Carrera: ")
+            db_sql.listar_pilotos()
+            id_piloto     = _pedir_int("  ID del Piloto: ")
             numero_parada = _pedir_int("  Número de parada (1, 2, 3...): ")
             tiempo_parada = _pedir_float("  Tiempo de parada en segundos (ej: 2.500): ")
             try:
@@ -244,9 +261,10 @@ def menu_crud():
                 print(f"  [❌] {_mensaje_error_sql(e)}")
 
         elif opcion == '4':
-            db_sql.listar_pit_stops()
-            id_piloto  = _pedir_int("  ID del Piloto: ")
+            anio_filtro = _pedir_anio_filtro()
+            db_sql.listar_pit_stops(anio_filtro)
             id_carrera = _pedir_int("  ID de la Carrera: ")
+            id_piloto  = _pedir_int("  ID del Piloto: ")
             try:
                 hubo_cambios = db_sql.eliminar_pit_stops_piloto(id_piloto, id_carrera)
             except Exception as e:

@@ -1,306 +1,272 @@
 # Decisiones de Diseño — TPO Grupo 7 F1
 
-Documento para registrar las decisiones tomadas sobre el DER y la arquitectura,
-para justificarlas en la presentación.
+Documento de registro de decisiones arquitectónicas y de modelado, con sus justificaciones técnicas, para ser referenciado durante la presentación.
 
 ---
 
-## DER Original
+## DER original
 
 El DER recibido (ver `consignas y der/DER-F1-GRUPO6.jpg`) define las siguientes entidades:
-EQUIPO, PILOTO, CIRCUITO, TEMPORADA, CARRERA, PARTICIPACION, RENDIMIENTO,
-RESULTADO, PIT_STOP, PENALIZACION.
+`EQUIPO`, `PILOTO`, `CIRCUITO`, `TEMPORADA`, `CARRERA`, `PARTICIPACION`, `RENDIMIENTO`, `RESULTADO`, `PIT_STOP`, `PENALIZACION`.
 
 ---
 
 ## Modificaciones al DER
 
 ### 1. Eliminación de `penalizacion_aplicada` de RESULTADO
+
 **Cambio:** se eliminó el atributo `penalizacion_aplicada` de la entidad RESULTADO.
 
-**Justificación:** el atributo era redundante. La entidad PENALIZACION ya registra
-la misma información con mayor detalle (tipo de penalización y tiempo adicional),
-relacionada por `id_piloto` e `id_carrera`. Mantener ambos generaba inconsistencia:
-si se actualizaba una penalización en PENALIZACION, `penalizacion_aplicada` en
-RESULTADO quedaba desactualizado.
+**Justificación:** el atributo era redundante. La entidad PENALIZACION ya registra la misma información con mayor detalle (`tipo` y `tiempo_adicional`), relacionada por `id_piloto` e `id_carrera`. Mantener ambos generaba riesgo de inconsistencia: si se actualizaba PENALIZACION, el campo en RESULTADO podía quedar desactualizado sin ninguna garantía de integridad.
 
 ---
 
-### 2. Incorporación de la entidad USUARIOS y FK con EQUIPOS
-**Cambio:** se agregó la entidad USUARIOS al DER con los atributos:
-`id_usuario`, `email`, `password`, `nombre_completo`, `rol`, `id_equipo (nullable FK → Equipos)`.
+### 2. Incorporación de la entidad USUARIOS
 
-**Justificación:** el sistema requiere autenticación para operar. USUARIOS no estaba
-en el DER original porque el enunciado no especifica gestión de acceso, pero es
-necesaria para implementar el manejo de sesiones con Redis (TTL por usuario).
-El atributo `IdEquipo` (nullable) conecta USUARIOS al modelo F1: un usuario con
-rol `director` tiene asignado el equipo que gestiona, mientras que `admin` y
-`prensa` lo tienen en NULL. Esto integra USUARIOS al grafo de entidades en lugar
-de dejarlo aislado, y permite consultas del tipo "qué equipo gestiona el director
-que inició sesión ahora mismo" combinando Redis (sesión activa) con SQL (datos del equipo).
+**Cambio:** se agregó USUARIOS con los atributos `id_usuario`, `email`, `password`, `nombre_completo`, `rol`, `id_equipo (nullable FK → Equipos)`.
+
+**Justificación:** el sistema requiere autenticación para operar. El atributo `IdEquipo` (nullable) conecta USUARIOS al modelo F1: un usuario con rol `director` tiene asignado el equipo que gestiona, mientras que `admin` y `prensa` lo tienen en NULL. Esto permite consultas del tipo "qué equipo gestiona el director actualmente conectado" combinando Redis (sesión activa) con SQL (datos del equipo).
 
 ---
 
 ### 3. Incorporación de la entidad AUDITORIA
-**Cambio:** se agregó la entidad AUDITORIA con los atributos:
-`id_auditoria`, `id_usuario (FK → Usuarios)`, `accion`, `fecha_hora`.
 
-**Justificación:** Redis guarda la sesión **activa** pero cuando el TTL expira
-ese dato desaparece para siempre. AUDITORIA actúa como complemento permanente:
-cada vez que un usuario hace login o logout, se escribe un registro en SQL.
-Esto demuestra la interacción Redis↔SQL requerida por la cátedra:
-- **Redis** sabe quién está conectado ahora (lectura O(1), con expiración automática)
-- **SQL** sabe quién se conectó históricamente (persistente, consultable)
+**Cambio:** se agregó AUDITORIA con los atributos `id_auditoria`, `id_usuario (FK → Usuarios)`, `accion`, `fecha_hora`.
 
-Los tres tipos de acción registrados son: `login`, `logout`, `expiro`.
+**Justificación:** Redis registra la sesión *activa*, pero cuando el TTL expira ese dato desaparece automáticamente. AUDITORIA actúa como complemento persistente: cada login y logout queda registrado en SQL con marca temporal, independientemente de la expiración de la sesión. Esto demuestra la interacción Redis ↔ SQL:
+
+- **Redis** → quién está conectado ahora (lectura O(1), expiración automática)
+- **SQL** → quién se conectó históricamente (persistente, consultable)
+
+Acciones registradas: `login`, `logout`, `expiro`.
 
 ---
 
-## Arquitectura Multi-Base
+### 4. Incorporación de la entidad HISTORIALEQUIPOS
 
-### Decisión: SQL Server como fuente de verdad
-Todas las entidades del DER se crean en SQL Server. Las bases NoSQL se pueblan
-consultando SQL Server para garantizar consistencia de IDs.
+**Cambio:** se agregó HISTORIALEQUIPOS con los atributos `id_historial`, `id_piloto (FK → Pilotos)`, `id_equipo (FK → Equipos)`, `anio_desde`, `anio_hasta (nullable)`.
 
-| Base | Rol | Poblada desde |
-|------|-----|--------------|
-| SQL Server | Fuente de verdad, esquema completo | — |
-| Cassandra | Resultados históricos desnormalizados para analítica | SQL Server |
-| MongoDB | Pit stops y penalizaciones como documentos | SQL Server |
-| Neo4j | Grafo de relaciones piloto↔temporada, carrera↔circuito | SQL Server |
-| Redis | Sesiones de usuario con TTL | SQL Server (valida credenciales) |
+**Justificación:** la tabla `Pilotos` solo registra el equipo actual de cada piloto. Para representar en el grafo Neo4j la relación histórica piloto↔equipo con su período de vigencia (necesaria para CU5), se incorporó esta tabla. `anio_hasta` en NULL indica que el piloto sigue activo en ese equipo. Esta información alimenta la relación `CORRIO_PARA` en Neo4j.
 
-**Justificación:** ninguna base NoSQL tiene datos que no existan en SQL Server.
-Esto garantiza consistencia y permite reconstruir cualquier base NoSQL desde cero
-en caso de pérdida de datos, re-ejecutando la sincronización.
+---
+
+## Arquitectura multi-base
+
+### SQL Server como fuente de verdad
+
+Todas las entidades del DER se crean en SQL Server (13 tablas). Las bases NoSQL se pueblan consultando SQL Server para garantizar consistencia de IDs y datos.
+
+| Base | Paradigma | Rol en el sistema | Poblada desde |
+|------|-----------|------------------|--------------|
+| SQL Server | Relacional | Fuente de verdad, esquema completo | — |
+| Cassandra | Columnar | Resultados históricos desnormalizados para analítica | SQL Server |
+| MongoDB | Documental | Pit stops y vueltas rápidas como documentos | SQL Server |
+| Neo4j | Grafo | Relaciones piloto↔equipo↔temporada↔circuito↔país | SQL Server |
+| Redis | Clave-valor | Sesiones de usuario con TTL | SQL Server (valida credenciales) |
+
+Ninguna base NoSQL tiene datos que no existan previamente en SQL Server. Esto garantiza que cualquier base NoSQL pueda reconstruirse desde cero re-ejecutando la sincronización.
 
 ---
 
 ## Consistencia eventual y tolerancia a fallos
 
 ### Modelo de consistencia
+
 El sistema implementa **consistencia eventual** (modelo BASE) para la capa NoSQL:
 
-- **SQL Server es ACID**: toda escritura en SQL es atómica y durable. Es la única fuente de verdad.
-- **Los NoSQL son entornos de lectura**: nunca se escriben directamente desde el flujo principal. Solo se actualizan vía sincronización desde SQL.
-- **La sincronización es idempotente**: la función `_sincronizar_en_segundo_plano()` borra y reinsertta todos los datos en cada NoSQL. Ejecutarla N veces produce el mismo resultado. Esto permite recuperar la consistencia en cualquier momento sin lógica de reconciliación. MongoDB usa `delete_many({})` y Cassandra usa `TRUNCATE` antes de reinsertar.
+- **SQL Server es ACID**: toda escritura es atómica y durable. Es la única fuente de verdad.
+- **Las bases NoSQL son entornos de lectura**: nunca se escriben directamente desde el flujo principal. Solo se actualizan vía sincronización desde SQL.
+- **La sincronización es idempotente**: `_sincronizar_en_segundo_plano()` elimina todos los datos de cada NoSQL y los reinsertar desde SQL. Ejecutarla N veces produce el mismo resultado. MongoDB usa `delete_many({})` y Cassandra usa `TRUNCATE` antes de reinsertar.
 
 ### Flujo de escritura
+
 ```
-Usuario → SQL Server (ACID, commit) → _sincronizar_en_segundo_plano()
-                                            ├── Cassandra (independiente)
-                                            ├── MongoDB   (independiente)
-                                            └── Neo4j     (independiente)
+Usuario → SQL Server (ACID, commit)
+               └── _sincronizar_en_segundo_plano()
+                         ├── Cassandra  (independiente)
+                         ├── MongoDB    (independiente)
+                         └── Neo4j      (independiente)
 ```
 
 ### Comportamiento ante fallos
-Cada base NoSQL se sincroniza de forma **independiente**. Si una falla:
-- Las demás continúan sincronizándose
+
+Cada base NoSQL se sincroniza de forma **independiente**. Si una falla durante el sync:
+
+- Las demás continúan y se sincronizan correctamente
 - SQL ya tiene el dato correcto → no hay pérdida de datos
-- El sistema avisa qué bases quedaron desactualizadas (`⚠️ Entornos de lectura listos: 2/3`)
-- Al volver a levantar la base, el siguiente CRUD restaura la consistencia automáticamente
+- El sistema informa cuántas bases se actualizaron (`⚠️ 2/3 sincronizados`)
+- Al recuperarse la base caída, el siguiente CRUD dispara la sincronización completa automáticamente
 
 ### ¿Por qué no hay rollback distribuido?
-Porque no es necesario: si SQL confirma el cambio, el dato está seguro.
-Si un NoSQL falla en el sync, es un problema de *lectura eventual*, no de *integridad*.
-La operación idempotente hace las veces de mecanismo de recuperación.
+
+Porque no es necesario. Si SQL confirma el cambio, el dato está persistido y es seguro. Si un NoSQL falla en el sync, es un problema de *disponibilidad de lectura eventual*, no de *integridad de datos*. La operación idempotente actúa como mecanismo de recuperación sin necesidad de coordinar entre bases.
 
 ---
 
-## Por qué cada base NoSQL para cada caso de uso
+## Justificación de cada base NoSQL
 
-### Cassandra → CU1 y CU2 (datos históricos y analítica masiva)
+### Cassandra → CU1 y CU2
 
-**CU1: ¿Qué pilotos han ganado múltiples campeonatos mundiales?**
-**CU2: ¿Qué equipos han tenido más victorias en la historia?**
+**CU1:** ¿Qué pilotos han ganado múltiples campeonatos mundiales?
+**CU2:** ¿Qué equipos han tenido más victorias en la historia?
 
 Cassandra es la opción correcta porque:
-- Ambos casos requieren consultar **grandes volúmenes de datos históricos** (resultados de décadas de carreras)
-- Cassandra está optimizada para **escrituras masivas y lecturas por rango** — ideal para series de datos que crecen constantemente con cada nueva carrera
-- El modelo de datos se diseña **por consulta**: cada tabla está optimizada para responder exactamente una pregunta, sin JOINs
-- `campeonatos_por_piloto` tiene como partition key `nombre_piloto` → todas las temporadas de un piloto están en una sola partición, leerlas es O(1)
-- `victorias_por_equipo` tiene como partition key `nombre_equipo` → contar victorias de un equipo es una lectura directa sin recorrer toda la tabla
-- En SQL, responder CU2 requeriría un JOIN entre Resultados, Carreras y Equipos + GROUP BY. En Cassandra esa respuesta ya está pre-calculada en la estructura de la tabla.
 
-### MongoDB → CU3 y CU4 (documentos semiestructurados)
+- Ambas consultas requieren procesar **grandes volúmenes de datos históricos** que crecen constantemente con cada nueva carrera
+- Cassandra está optimizada para **escrituras masivas y lecturas por clave de partición** — el modelo se diseña por consulta, no por entidad
+- `campeonatos_por_piloto`: partition key `nombre_piloto` → todas las temporadas de un piloto en una sola partición, lectura O(1)
+- `victorias_por_equipo`: partition key `nombre_equipo` → contar victorias de un equipo es una lectura directa sin recorrer toda la tabla
+- En SQL, CU2 requeriría un JOIN entre Resultados, Carreras y Equipos + GROUP BY. En Cassandra esa respuesta ya está pre-calculada en la estructura de la tabla
 
-**CU3: ¿Qué pilotos han marcado la vuelta más rápida en diversas carreras?**
-**CU4: ¿Cuántos pit stops se realizan en promedio por carrera?**
+### MongoDB → CU3 y CU4
+
+**CU3:** ¿Qué pilotos han marcado la vuelta más rápida en diversas carreras?
+**CU4:** ¿Cuántos pit stops se realizan en promedio por carrera?
 
 MongoDB es la opción correcta porque:
-- Los pit stops y vueltas rápidas son datos **semiestructurados**: cada documento
-  puede tener atributos distintos o anidados sin necesidad de un esquema rígido.
-- Las consultas de CU3 y CU4 requieren **agregaciones** (GROUP BY + COUNT/AVG en SQL),
-  que MongoDB resuelve nativamente con su pipeline de agregación (`$group`, `$avg`, `$sum`).
-- Leer todos los pit stops de una carrera es una consulta por `id_carrera` —
-  con el índice `idx_carrera` la búsqueda es O(log n) sin recorrer toda la colección.
-- La colección `vueltas_rapidas` tiene un documento por carrera con el piloto más rápido,
-  lo que hace que CU3 sea un simple `$group` por piloto sin JOINs.
 
-**Colecciones y sus índices:**
+- Los pit stops y vueltas rápidas son datos **semiestructurados**: pueden tener atributos variables sin necesidad de un esquema rígido
+- CU3 y CU4 requieren **agregaciones** (equivalentes a GROUP BY + AVG/COUNT en SQL), que MongoDB resuelve nativamente con su pipeline (`$group`, `$avg`, `$sum`)
+- Con el índice `idx_carrera`, leer todos los pit stops de una carrera es O(log n) sin recorrer la colección completa
+
+**Colecciones e índices:**
+
 | Colección | Índice | Optimiza |
 |-----------|--------|----------|
-| `vueltas_rapidas` | `(id_carrera, tiempo_vuelta_seg)` | ordenar por tiempo dentro de una carrera |
-| `vueltas_rapidas` | `(nombre_piloto)` | contar vueltas rápidas por piloto (CU3) |
-| `pit_stops` | `(id_carrera)` | agrupar pit stops de una carrera (CU4) |
-| `pit_stops` | `(anio)` | filtrar pit stops por temporada |
+| `vueltas_rapidas` | `(id_carrera, tiempo_vuelta_seg)` | Ordenar por tiempo dentro de una carrera |
+| `vueltas_rapidas` | `(nombre_piloto)` | Contar vueltas rápidas por piloto — CU3 |
+| `pit_stops` | `(id_carrera)` | Agrupar pit stops de una carrera — CU4 |
+| `pit_stops` | `(anio)` | Filtrar pit stops por temporada |
 
-### Neo4j → CU5 y CU6 (relaciones M:N complejas)
+### Neo4j → CU5 y CU6
 
-**CU5: ¿Qué pilotos han tenido más de 10 podios Y han corrido en más de 5 temporadas?**
-**CU6: ¿Qué países han tenido mayor cantidad de carreras? ¿Qué país tiene más de 1 circuito?**
+**CU5:** ¿Qué pilotos han tenido más de 10 podios Y han corrido en más de 5 temporadas?
+**CU6:** ¿Qué países han tenido mayor cantidad de carreras? ¿Qué país tiene más de 1 circuito?
 
 Neo4j es la opción correcta porque:
-- Ambas preguntas son **consultas de grafos**: navegar relaciones entre nodos es
-  la operación natural de Neo4j, mientras que en SQL requeriría múltiples JOINs
-  con subqueries y GROUP BY anidados.
-- CU5 recorre la relación `(Piloto)-[:PARTICIPO_EN]->(Temporada)` contando podios
-  acumulados — en Neo4j esto es un `MATCH` + `WITH` + `WHERE`, sin JOINs.
-- CU6 recorre `(Carrera)-[:REALIZADO_EN]->(Circuito)-[:UBICADO_EN]->(Pais)`,
-  una cadena de 3 nodos que en SQL requeriría 2 JOINs + GROUP BY.
-- La relación `PARTICIPO_EN` tiene el atributo `podios` que refleja los podios
-  reales leídos desde SQL Server al momento de la sincronización.
 
-**Nodos y relaciones:**
+- Ambas consultas son **traversals de grafo**: navegar relaciones entre nodos es la operación natural de Neo4j, mientras que en SQL requeriría múltiples JOINs con subqueries y GROUP BY anidados
+- CU5 recorre `(Piloto)-[:PARTICIPO_EN]->(Temporada)` acumulando podios por temporada — un simple `MATCH + WITH + WHERE` sin JOINs
+- CU6 recorre `(Carrera)-[:REALIZADO_EN]->(Circuito)-[:UBICADO_EN]->(Pais)`, una cadena de 3 nodos que en SQL requeriría 2 JOINs + GROUP BY
+
+**Nodos:**
+
 | Nodo | Atributos |
 |------|-----------|
 | `Piloto` | `nombre` |
+| `Equipo` | `nombre` |
 | `Temporada` | `anio` |
 | `Carrera` | `nombre` |
 | `Circuito` | `nombre` |
 | `Pais` | `nombre` |
 
-| Relación | Desde→Hasta | Atributos |
-|----------|------------|-----------|
-| `PARTICIPO_EN` | Piloto→Temporada | `podios` |
-| `REALIZADO_EN` | Carrera→Circuito | — |
-| `UBICADO_EN` | Circuito→Pais | — |
+**Relaciones:**
+
+| Relación | Desde → Hasta | Atributos | Fuente SQL |
+|----------|--------------|-----------|-----------|
+| `PARTICIPO_EN` | Piloto → Temporada | `podios` | Resultados (COUNT pos ≤ 3) |
+| `COMPITIO_EN` | Piloto → Carrera | `posicion`, `equipo` | Resultados |
+| `CORRIO_PARA` | Piloto → Equipo | `desde`, `hasta` | HistorialEquipos |
+| `REALIZADO_EN` | Carrera → Circuito | — | Carreras + Circuitos |
+| `UBICADO_EN` | Circuito → Pais | — | Circuitos |
 
 ### Redis → Sesiones de usuario
 
 Redis es la opción correcta porque:
+
 - Las sesiones son datos **temporales** — no tienen sentido en una base persistente
-- Redis soporta TTL (Time To Live) nativo por clave, sin necesidad de jobs de limpieza
-- Lectura/escritura en memoria: verificar si una sesión está activa es O(1)
-- Cuando el TTL expira, Redis borra la clave automáticamente
+- Redis soporta TTL nativo por clave, sin necesidad de jobs de limpieza externos
+- Verificar si una sesión está activa es O(1) en memoria
 
-**Flujo implementado:**
-1. Usuario ingresa email y password
-2. Se validan contra la tabla `Usuarios` de SQL Server (fuente de verdad)
-3. Si son correctas, se crea la sesión en Redis según el **rol**:
-   - `admin` → `r.set(clave, rol)` sin TTL — sesión permanente hasta logout explícito
+**Flujo de sesión implementado:**
+
+1. El usuario ingresa email y contraseña
+2. Se validan contra la tabla `Usuarios` de SQL Server
+3. Si son correctas, se crea la sesión en Redis según el rol:
+   - `admin` → `r.set(clave, rol)` sin TTL — permanente hasta logout explícito
    - `director` / `prensa` → `r.setex(clave, 600, rol)` — TTL deslizante de 600 segundos
-4. El valor guardado en Redis es el **rol** del usuario (necesario para saber qué TTL aplicar al renovar)
-5. Cada acción exitosa en el menú llama a `renovar_sesion()` → `r.expire(clave, 600)` — resetea el contador
-6. Si el usuario no hace nada por más de 600s → Redis expira la clave automáticamente → el menú detecta TTL=-2 y cierra la sesión
-7. Al hacer logout → se elimina la clave manualmente → se registra en Auditoria
-8. Cada login/logout se registra en la tabla `Auditoria` de SQL (historial permanente)
+4. El valor almacenado en Redis es el **rol** del usuario (necesario para saber qué TTL aplicar al renovar)
+5. Cada acción en el menú llama a `renovar_sesion()` → `r.expire(clave, 600)` — reinicia el contador
+6. Si el usuario no interactúa por más de 600s → Redis expira la clave → el menú detecta TTL = -2 y cierra la sesión
+7. Al hacer logout → se elimina la clave → se registra en Auditoria
 
-**Por qué admin sin TTL:**
-Admin es el operador del sistema. No tiene sentido expulsarlo por inactividad —
-puede estar monitoreando sin interactuar. Director y prensa son usuarios externos
-con acceso limitado, por lo que la expiración por inactividad sí aplica.
+**Por qué `admin` sin TTL:** el administrador del sistema puede estar monitoreando sin interactuar activamente. Expulsarlo por inactividad no tiene sentido operativo. Director y prensa son usuarios externos con acceso limitado, por lo que la expiración por inactividad sí aplica.
 
-**Por qué TTL deslizante y no fijo:**
-Un TTL fijo expira aunque el usuario esté activo. Para un portal de consultas,
-lo natural es que la sesión se mantenga mientras el usuario opera y expire solo
-si deja de interactuar. Redis devuelve -2 cuando la clave no existe (expirada)
-y -1 cuando existe sin TTL (admin) — ambos casos se manejan en `verificar_sesion()`.
+**Por qué TTL deslizante y no fijo:** un TTL fijo expira aunque el usuario esté activo. El TTL deslizante mantiene la sesión mientras el usuario opera y la cierra solo si deja de interactuar — comportamiento natural para un portal de consultas.
 
 ---
 
 ## CRUD — Gestión de datos maestros
 
-### Decisión: toda escritura pasa por SQL
-Las operaciones CRUD del sistema solo modifican **SQL Server**. Los NoSQL son
-entornos de lectura y nunca reciben escrituras directas desde el flujo principal.
+### Toda escritura pasa por SQL
 
-**Justificación:** si se permitiera escribir directamente en un NoSQL, se rompe
-la garantía de consistencia. Un insert en Cassandra sin el correspondiente insert
-en SQL generaría un dato huérfano que desaparecería en la próxima sincronización.
+Las operaciones CRUD solo modifican SQL Server. Las bases NoSQL nunca reciben escrituras directas desde el flujo principal.
 
-### Operaciones implementadas y su impacto en los CUs
+Si se permitiera escribir directamente en un NoSQL, se rompería la garantía de consistencia: un insert en Cassandra sin el correspondiente insert en SQL generaría un dato huérfano que desaparecería en la próxima sincronización.
 
-Las operaciones CRUD modifican las tablas `Resultados` y `PitStops` de SQL Server, que son exactamente las que alimentan los casos de uso NoSQL. Esto hace que el impacto sea directo y verificable.
+### Operaciones y su impacto en los casos de uso
 
-| Operación | Tabla SQL | CU impactado tras el sync |
-|-----------|-----------|--------------------------|
-| Listar Pilotos / Equipos / Carreras | — | Solo lectura, sin sync |
-| Registrar Resultado (pos=1) | `Resultados` | CU2: equipo suma victoria · CU3: piloto aparece en vueltas rápidas |
-| Registrar Resultado (pos≤3) | `Resultados` | CU5: piloto suma podio y/o temporada |
-| Eliminar Resultado | `Resultados` | Revierte CU2, CU3, CU5 |
-| Registrar Pit Stop | `PitStops` | CU4: promedio de pit stops sube |
-| Eliminar Pit Stops | `PitStops` | CU4: promedio de pit stops baja |
+Las operaciones modifican `Resultados` y `PitStops` — exactamente las tablas que alimentan los casos de uso NoSQL. El impacto es inmediato y verificable tras el sync.
 
-**Puntos F1 automáticos:** el sistema calcula los puntos según la posición ingresada (1→25, 2→18, 3→15, 4→12 …) para no pedirlos manualmente.
+| Operación | Tabla SQL | CU impactado |
+|-----------|-----------|-------------|
+| Listar pilotos / carreras / resultados | — | Solo lectura, sin sync |
+| Registrar resultado (pos = 1) | `Resultados` | CU2: equipo suma victoria · CU3: piloto aparece en vueltas rápidas |
+| Registrar resultado (pos ≤ 3) | `Resultados` | CU5: piloto suma podio y/o temporada |
+| Eliminar resultado | `Resultados` | Revierte CU2, CU3, CU5 |
+| Registrar pit stop | `PitStops` | CU4: promedio de pit stops sube |
+| Eliminar pit stops | `PitStops` | CU4: promedio de pit stops baja |
 
-**Carreras de demo (2024–2026):** las carreras ID 41–55 no tienen resultados pre-cargados, lo que permite insertar datos frescos sin colisionar con registros históricos existentes. En producción estas serían las carreras de la temporada en curso.
+**Puntos F1 automáticos:** el sistema asigna puntos según la escala oficial (1→25, 2→18, 3→15, 4→12 …) sin pedirlos manualmente.
+
+**Carreras de demo (2024–2026):** las carreras ID 41–55 no tienen resultados pre-cargados, permitiendo insertar datos frescos sin colisionar con registros históricos. En producción representarían las carreras de la temporada en curso.
 
 ### Validación de inputs
-- IDs: se piden hasta recibir un número entero válido (`_pedir_int`)
-- Decimales: se piden hasta recibir un float válido (`_pedir_float`) — usado para tiempo de pit stop
-- Errores SQL (FK violation, duplicado) se traducen a mensajes legibles en lugar de mostrar el error crudo de pymssql
-- Operaciones de eliminación verifican `cursor.rowcount`: si ninguna fila fue afectada, informan que el registro no existe y **no disparan el sync** innecesariamente
 
-### Comportamiento ante fallo en el sync post-CRUD
-- Si SQL confirma → el dato está seguro independientemente de lo que pase después
-- Si un NoSQL falla en la propagación → SQL tiene el estado correcto
-- El sistema informa cuántas bases se sincronizaron (`✅ Entornos NoSQL sincronizados: 2/3`)
-- El siguiente CRUD vuelve a intentar la sincronización completa (operación idempotente)
+- **IDs:** se solicitan hasta recibir un entero válido (`_pedir_int`) — nunca llega un string a SQL
+- **Decimales:** ídem con float (`_pedir_float`) — usado para tiempo de pit stop
+- **Errores SQL:** FK violation, clave duplicada y errores de tipo se traducen a mensajes legibles (`_mensaje_error_sql`)
+- **Deletes vacíos:** se verifica `cursor.rowcount` — si ninguna fila fue afectada, se informa y no se dispara el sync innecesariamente
 
 ---
 
 ## Decisiones técnicas
 
 ### Cassandra + Python 3.12
-Python 3.12 eliminó el módulo `asyncore` que el driver de Cassandra usaba por defecto.
-Solución aplicada:
-- Instalar dependencias de sistema: `sudo apt-get install python3-dev libev-dev libffi-dev`
-- Reinstalar el driver: `pip install cassandra-driver --no-cache-dir --force-reinstall`
-- En el código, setear el event loop de asyncio antes de importar el cluster:
-  ```python
-  import asyncio
-  asyncio.set_event_loop(asyncio.new_event_loop())
-  from cassandra.io.asyncioreactor import AsyncioConnection
-  cluster = Cluster(['localhost'], connection_class=AsyncioConnection)
-  ```
+
+Python 3.12 eliminó el módulo `asyncore`, que el driver de Cassandra usaba por defecto. Solución aplicada en `cassandraDB.py`:
+
+```python
+import asyncio
+asyncio.set_event_loop(asyncio.new_event_loop())
+from cassandra.io.asyncioreactor import AsyncioConnection
+cluster = Cluster(['localhost'], connection_class=AsyncioConnection)
+```
 
 ### Conexión lazy en Cassandra
-El objeto `cluster` y `session` de Cassandra **no se inicializan al importar el módulo**.
-Se usa una función `conectar()` que se llama explícitamente antes del primer uso.
-Esto evita que importar `cassandraDB` en `main.py` dispare una conexión automática
-y falle si Cassandra no está disponible en ese momento.
+
+El objeto `cluster` y `session` de Cassandra no se inicializan al importar el módulo. Se usa una función `conectar()` que se llama explícitamente antes del primer uso. Esto evita que importar `cassandraDB` en `main.py` dispare una conexión automática y falle si Cassandra aún no está disponible.
 
 ### Neo4j driver v5 — `.consume()` obligatorio
-El driver de Neo4j v5 no garantiza que una escritura se comitee hasta que el resultado
-sea consumido. Por eso todas las operaciones de escritura usan `.consume()`:
+
+El driver v5 de Neo4j no garantiza que una escritura se commitee hasta que el resultado sea consumido. Por eso todas las operaciones de escritura en el grafo usan `.consume()`:
+
 ```python
 session.run("MERGE ...", params).consume()
 ```
+
 Sin esto, el grafo aparece vacío aunque la query no lance errores.
 
+### Sync idempotente en Cassandra
+
+La sincronización de Cassandra ejecuta `TRUNCATE` en las tres tablas antes de reinsertar desde SQL. Esto garantiza que el sync sea idempotente: si un resultado fue insertado por CRUD y luego eliminado, el TRUNCATE asegura que Cassandra no conserve datos huérfanos. MongoDB aplica el mismo principio con `delete_many({})`.
+
 ### Entorno virtual (.venv)
-Se usa un entorno virtual para aislar las dependencias del proyecto.
-El directorio `.venv/` está en `.gitignore` — cada integrante debe crearlo localmente con:
+
+El directorio `.venv/` está en `.gitignore`. Cada integrante debe crearlo localmente:
+
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate   # o el equivalente en Windows
 pip install -r requirements.txt
 ```
-
----
-
-## Decisiones pendientes
-
-- [x] Definir si PARTICIPACION registra atributos adicionales → sin atributos extra
-- [x] Confirmar estructura de documentos MongoDB para PitStops → colecciones `pit_stops` y `vueltas_rapidas`
-- [x] Confirmar atributos de relaciones en Neo4j → `PARTICIPO_EN` tiene `podios`
-- [x] Completar justificación de MongoDB (CU3, CU4) → completado arriba
-- [x] Completar justificación de Neo4j (CU5, CU6) → completado arriba
-- [x] Implementar `poblar_desde_sql()` en Neo4j → implementado, lee desde SQL y puebla el grafo
-- [x] Corregir bugs en `neo4jDB.py` → resueltos: `.consume()` en todas las escrituras, `count(ca)` en CU6
-- [x] CU5 umbral `>5 temporadas` sin datos suficientes → resuelto agregando temporadas 2016-2018
-- [x] CRUD sin impacto visible en CUs → rediseñado para operar sobre `Resultados` y `PitStops` directamente
-- [x] Sync de Cassandra no era idempotente en deletes → corregido con `TRUNCATE` antes de reinsertar
-- [x] Deletes sin validación de existencia → `cursor.rowcount` previene sync innecesario si no hay filas afectadas
-- [x] Races vacías para demo → temporadas 2024-2026 (carreras 41-55) sin resultados pre-cargados

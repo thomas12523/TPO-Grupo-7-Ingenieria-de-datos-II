@@ -53,9 +53,9 @@ def poblar_desde_sql():
 
     Crea:
       - (Piloto)-[:PARTICIPO_EN {podios}]->(Temporada)
-          con los podios reales por temporada (posición final <= 3)
       - (Carrera)-[:REALIZADO_EN]->(Circuito)-[:UBICADO_EN]->(Pais)
-          con todas las carreras históricas y su ubicación
+      - (Piloto)-[:COMPITIO_EN {posicion, equipo}]->(Carrera)
+      - (Piloto)-[:CORRIO_PARA {desde, hasta}]->(Equipo)
 
     Limpia el grafo antes de insertar para que sea idempotente.
     """
@@ -75,7 +75,7 @@ def poblar_desde_sql():
     """)
     podios = cursor.fetchall()
 
-    # Query 2: carreras con circuito y país (nombre único: "GP {Ciudad} {Año}")
+    # Query 2: carreras con circuito y país
     cursor.execute("""
         SELECT
             'GP ' + ci.Ciudad + ' ' + CAST(t.Anio AS VARCHAR) AS NombreCarrera,
@@ -87,15 +87,43 @@ def poblar_desde_sql():
         ORDER BY t.Anio, c.IdCarrera
     """)
     carreras = cursor.fetchall()
-    conn.close()
 
-    pass
+    # Query 3: participación individual en cada carrera (posición + equipo)
+    cursor.execute("""
+        SELECT
+            p.Nombre  AS NombrePiloto,
+            e.Nombre  AS NombreEquipo,
+            r.PosicionFinal,
+            'GP ' + ci.Ciudad + ' ' + CAST(t.Anio AS VARCHAR) AS NombreCarrera
+        FROM Resultados r
+        JOIN Pilotos    p  ON r.IdPiloto    = p.IdPiloto
+        JOIN Equipos    e  ON p.IdEquipo    = e.IdEquipo
+        JOIN Carreras   c  ON r.IdCarrera   = c.IdCarrera
+        JOIN Circuitos  ci ON c.IdCircuito  = ci.IdCircuito
+        JOIN Temporadas t  ON c.IdTemporada = t.IdTemporada
+        ORDER BY t.Anio, r.IdCarrera, r.PosicionFinal
+    """)
+    competencias = cursor.fetchall()
+
+    # Query 4: historial de equipos por piloto (con período)
+    cursor.execute("""
+        SELECT
+            p.Nombre  AS NombrePiloto,
+            e.Nombre  AS NombreEquipo,
+            h.AnioDesde,
+            h.AnioHasta
+        FROM HistorialEquipos h
+        JOIN Pilotos p ON h.IdPiloto = p.IdPiloto
+        JOIN Equipos e ON h.IdEquipo = e.IdEquipo
+        ORDER BY p.Nombre
+    """)
+    historial = cursor.fetchall()
+    conn.close()
 
     # Limpiar grafo antes de insertar
     borrarDatosNeo4j()
 
-    # Insertar relaciones piloto-temporada
-    # Se abre una sesión por fila para garantizar el commit en neo4j driver v5
+    # Relaciones piloto-temporada con podios
     for row in podios:
         with driver.session() as session:
             session.run("""
@@ -105,7 +133,7 @@ def poblar_desde_sql():
                 SET r.podios = $podios
             """, nombre=row['NombrePiloto'], anio=row['Anio'], podios=row['Podios']).consume()
 
-    # Insertar relaciones carrera-circuito-país
+    # Relaciones carrera-circuito-país
     for row in carreras:
         vincular_carrera_circuito_pais(
             row['NombreCarrera'],
@@ -113,7 +141,36 @@ def poblar_desde_sql():
             row['NombrePais']
         )
 
-    pass
+    # Relaciones piloto → carrera con posición y equipo
+    for row in competencias:
+        with driver.session() as session:
+            session.run("""
+                MERGE (p:Piloto  {nombre: $piloto})
+                MERGE (ca:Carrera {nombre: $carrera})
+                MERGE (p)-[r:COMPITIO_EN]->(ca)
+                SET r.posicion = $posicion,
+                    r.equipo   = $equipo
+            """,
+            piloto=row['NombrePiloto'],
+            carrera=row['NombreCarrera'],
+            posicion=row['PosicionFinal'],
+            equipo=row['NombreEquipo']).consume()
+
+    # Nodos Equipo y relación piloto → equipo con período
+    for row in historial:
+        hasta = row['AnioHasta'] if row['AnioHasta'] else 'presente'
+        with driver.session() as session:
+            session.run("""
+                MERGE (p:Piloto {nombre: $piloto})
+                MERGE (e:Equipo {nombre: $equipo})
+                MERGE (p)-[r:CORRIO_PARA]->(e)
+                SET r.desde = $desde,
+                    r.hasta = $hasta
+            """,
+            piloto=row['NombrePiloto'],
+            equipo=row['NombreEquipo'],
+            desde=row['AnioDesde'],
+            hasta=hasta).consume()
 
 
 # ==========================================
@@ -124,11 +181,14 @@ def pilotosEficientes():
     """
     CU5: Pilotos con más de 10 podios en total Y que corrieron en más de 5 temporadas.
 
-    El dataset incluye 8 temporadas (2016-2023). Pilotos que califican:
+    El dataset incluye 8 temporadas con resultados (2016-2023). Pilotos que califican:
     - Verstappen: ~37 podios en 8 temporadas
-    - Hamilton:   ~31 podios en 7 temporadas (2022 sin podios)
+    - Hamilton:   ~31 podios en 7 temporadas
     - Russell:    ~20 podios en 7 temporadas
     - Leclerc:    ~17 podios en 6 temporadas
+
+    Con el CRUD (insertar resultado en 2024-2026), Perez también puede aparecer:
+    actualmente tiene 15 podios en 5 temporadas — agregar 1 podio en 2024 lo habilita.
     """
     sep = "─" * 50
     print(f"\n{sep}")
